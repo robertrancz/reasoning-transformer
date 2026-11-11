@@ -77,11 +77,71 @@ public class GradientSanityTests
         NumericalGradientHelper.Check(b, dB, Loss);
     }
 
-    [Fact(Skip = "Implement SoftmaxOp first")]
-    public void Softmax_GradientCheck()
+    // =========================================================================
+    // SoftmaxOp
+    // =========================================================================
+
+    [Fact]
+    public void Softmax_UniformInput_ProducesUniformProbs()
     {
-        // TODO: 1-D logits [8], check dx
-        throw new NotImplementedException();
+        // softmax([0, 0, 0, 0]) → [0.25, 0.25, 0.25, 0.25]
+        var x     = new Tensor([4], [0f, 0f, 0f, 0f]);
+        var probs = SoftmaxOp.Forward(x);
+
+        foreach (var p in probs.Data)
+            Assert.Equal(0.25f, p, precision: 5);
+    }
+
+    [Fact]
+    public void Softmax_OutputSumsToOne()
+    {
+        // For any input the probabilities must sum to 1 (per row).
+        var x = new Tensor([3, 5]);
+        TensorOps.RandomNormal(x, seed: 7);
+        var probs = SoftmaxOp.Forward(x);
+
+        for (int row = 0; row < 3; row++)
+        {
+            float rowSum = 0f;
+            for (int col = 0; col < 5; col++) rowSum += probs[row, col];
+            Assert.Equal(1f, rowSum, precision: 5);
+        }
+    }
+
+    [Fact]
+    public void Softmax_GradientCheck_1D()
+    {
+        // Loss = sum(softmax(x) * w)  →  dOut = w
+        // Small values keep |Loss| small → avoids float32 cancellation.
+        var x = new Tensor([6], [ 0.5f, -0.3f,  0.1f,  0.8f, -0.2f,  0.4f]);
+        var w = new Tensor([6], [ 0.1f,  0.3f, -0.2f,  0.1f,  0.2f, -0.1f]);
+
+        var probs = SoftmaxOp.Forward(x);
+        var dx    = SoftmaxOp.Backward(w, probs);  // dOut = w
+
+        NumericalGradientHelper.Check(x, dx,
+            forward: () => TensorOps.Sum(TensorOps.Multiply(SoftmaxOp.Forward(x), w)));
+    }
+
+    [Fact]
+    public void Softmax_GradientCheck_2D()
+    {
+        // [3, 5] batch — softmax applied independently to each row.
+        // Loss = sum(softmax(x) * w) over all elements.
+        var x = new Tensor([3, 5], [
+             0.4f, -0.1f,  0.6f, -0.3f,  0.2f,
+            -0.2f,  0.5f,  0.1f,  0.3f, -0.4f,
+             0.1f, -0.5f,  0.3f,  0.2f, -0.1f]);
+        var w = new Tensor([3, 5], [
+             0.1f, -0.2f,  0.1f,  0.0f,  0.1f,
+            -0.1f,  0.2f, -0.1f,  0.1f,  0.0f,
+             0.0f,  0.1f, -0.1f,  0.2f, -0.1f]);
+
+        var probs = SoftmaxOp.Forward(x);
+        var dx    = SoftmaxOp.Backward(w, probs);
+
+        NumericalGradientHelper.Check(x, dx,
+            forward: () => TensorOps.Sum(TensorOps.Multiply(SoftmaxOp.Forward(x), w)));
     }
 
     [Fact(Skip = "Implement LayerNormOp first")]

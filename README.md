@@ -78,7 +78,7 @@ reason.cs/
 │   │   │   └── TensorOps.cs        # MatMul, Transpose, Sum, Add, Multiply, Scale, RandomNormal
 │   │   ├── Autograd/Ops/
 │   │   │   ├── MatMulOp.cs         # ✅ Forward + backward (dA = dC×Bᵀ, dB = Aᵀ×dC)
-│   │   │   ├── SoftmaxOp.cs        # Numerically stable softmax + backward
+│   │   │   ├── SoftmaxOp.cs        # ✅ Numerically stable softmax + Jacobian-vector backward
 │   │   │   ├── LayerNormOp.cs      # LayerNorm + backward (dx, dγ, dβ)
 │   │   │   ├── CrossEntropyOp.cs   # Fused softmax + cross-entropy
 │   │   │   ├── RoPEOp.cs           # Rotary positional encoding + backward
@@ -128,10 +128,11 @@ dotnet test ReasonCs.slnx
 |---|---|---|
 | `TensorOpsTests` — MatMul (2×2, identity, shape mismatch), Scale | 4 | ✅ passing |
 | `GradientSanityTests` — MatMul dA, dB, non-uniform loss | 3 | ✅ passing |
-| `GradientSanityTests` — Softmax, LayerNorm (×2), RoPE, CrossEntropy | 5 | ⏸ skipped (gates) |
+| `GradientSanityTests` — Softmax uniform, sums-to-one, grad 1D, grad 2D | 4 | ✅ passing |
+| `GradientSanityTests` — LayerNorm (×2), RoPE, CrossEntropy | 4 | ⏸ skipped (gates) |
 | `TransformerSmokeTests` — output shape, no NaN/Inf | 2 | ⏸ skipped (gates) |
 
-**Total: 7 passing · 7 skipped · 0 failing**
+**Total: 11 passing · 6 skipped · 0 failing**
 
 Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries the name of the op that must be implemented first. Remove the `Skip` attribute once the op is done.
 
@@ -156,6 +157,10 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 - **`Forward(a, b)`** — delegates to `TensorOps.MatMul` ✅
 - **`Backward(dC, a, b)`** — `dA = dC × Bᵀ`, `dB = Aᵀ × dC` ✅ verified by 3 gradient tests
 
+#### `SoftmaxOp` — `src/ReasonCs.Core/Autograd/Ops/SoftmaxOp.cs`
+- **`Forward(x)`** — numerically stable (max subtraction), works on any rank, applies along last dim ✅
+- **`Backward(dOut, probs)`** — Jacobian-vector product: `dx_i = p_i · (dOut_i − dot(p, dOut))` ✅ verified by 1D + 2D gradient tests
+
 #### `NumericalGradientHelper` — `tests/ReasonCs.Tests/Autograd/`
 - Finite-difference gradient checker with configurable `eps` and `tolerance` ✅
 - Calibrated for float32: `eps=5e-4`, `tolerance=0.01` (1%) with documented rationale
@@ -168,7 +173,7 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 
 | Module | File | Status |
 |---|---|---|
-| `SoftmaxOp` | `Autograd/Ops/SoftmaxOp.cs` | 🔲 TODO |
+| `SoftmaxOp` | `Autograd/Ops/SoftmaxOp.cs` | ✅ done |
 | `LayerNormOp` | `Autograd/Ops/LayerNormOp.cs` | 🔲 TODO |
 | `CrossEntropyOp` | `Autograd/Ops/CrossEntropyOp.cs` | 🔲 TODO |
 | `RoPEOp` | `Autograd/Ops/RoPEOp.cs` | 🔲 TODO |
@@ -189,8 +194,7 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 
 ### 🔜 What's Next (ordered by plan)
 
-1. **`SoftmaxOp`** — forward (numerically stable) + backward (Jacobian-vector product), remove skip
-2. **`LayerNormOp`** — forward + backward (dx, dγ, dβ), remove 2 skips
+1. **`LayerNormOp`** — forward + backward (dx, dγ, dβ), remove 2 skips
 3. **`CrossEntropyOp`** — fused log-softmax + backward (`p - 1_target`), remove skip
 4. **`RoPEOp`** — forward + backward (⚠ verify against finite-diff — this is the hard one), remove skip
 5. **`EmbeddingOp`** — lookup + scatter-add gradient
