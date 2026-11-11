@@ -13,7 +13,7 @@ public class TransformerSmokeTests
         VocabSize: 64, EmbedDim: 32, NumHeads: 2,
         NumLayers: 2, MlpHiddenDim: 64, MaxSeqLen: 16);
 
-    [Fact(Skip = "Implement TransformerModel.Forward first")]
+    [Fact]
     public void Forward_OutputShape_IsSeqLen_x_VocabSize()
     {
         var model = new TransformerModel(SmallConfig);
@@ -26,7 +26,7 @@ public class TransformerSmokeTests
         Assert.Equal(SmallConfig.VocabSize, logits.Shape[1]);
     }
 
-    [Fact(Skip = "Implement TransformerModel.Forward first")]
+    [Fact]
     public void Forward_NoNaNOrInf()
     {
         var model  = new TransformerModel(SmallConfig);

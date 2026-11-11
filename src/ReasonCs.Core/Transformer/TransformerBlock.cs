@@ -1,3 +1,4 @@
+using ReasonCs.Core.Autograd.Ops;
 using ReasonCs.Core.Tensors;
 
 namespace ReasonCs.Core.Transformer;
@@ -24,13 +25,17 @@ namespace ReasonCs.Core.Transformer;
 /// Pre-Norm (used here):
 ///   x = x + Attention(LayerNorm1(x))
 ///   x = x + MLP(LayerNorm2(x))
+///
+/// LayerNorm gamma parameters are initialised to 1 so the identity affine
+/// transform leaves normalised activations unchanged at model start.
 /// </summary>
 public sealed class TransformerBlock
 {
     public readonly Attention Attn;
     public readonly MLP       Mlp;
 
-    // LayerNorm parameters  [EmbedDim]
+    // LayerNorm affine parameters  [EmbedDim]
+    // Gamma is initialised to 1 in the constructor (identity transform).
     public Tensor Gamma1, Beta1;
     public Tensor Gamma2, Beta2;
 
@@ -38,16 +43,36 @@ public sealed class TransformerBlock
     {
         Attn   = new Attention(embedDim, numHeads);
         Mlp    = new MLP(embedDim, mlpHiddenDim);
+
         Gamma1 = new Tensor([embedDim]);
         Beta1  = new Tensor([embedDim]);
         Gamma2 = new Tensor([embedDim]);
         Beta2  = new Tensor([embedDim]);
+
+        // Gamma = 1 → identity affine; Beta = 0 → no bias (default from Tensor ctor)
+        TensorOps.Fill(Gamma1, 1f);
+        TensorOps.Fill(Gamma2, 1f);
     }
 
+    /// <summary>
+    /// Pre-Norm forward pass.
+    ///
+    /// x      : [seqLen, embedDim]
+    /// seqLen : number of tokens (= x.Shape[0])
+    /// returns : [seqLen, embedDim]
+    /// </summary>
     public Tensor Forward(Tensor x, int seqLen)
     {
-        // TODO: implement pre-norm residual block
-        throw new NotImplementedException();
+        // ── Sublayer 1: Pre-Norm Attention ────────────────────────────────────
+        // mean and rstd are cached here for the backward pass (not yet needed).
+        var (xNorm1, _, _) = LayerNormOp.Forward(x, Gamma1, Beta1);
+        x = TensorOps.Add(x, Attn.Forward(xNorm1, seqLen));
+
+        // ── Sublayer 2: Pre-Norm MLP ──────────────────────────────────────────
+        var (xNorm2, _, _) = LayerNormOp.Forward(x, Gamma2, Beta2);
+        x = TensorOps.Add(x, Mlp.Forward(xNorm2));
+
+        return x;
     }
 
     public Tensor Backward(Tensor dOut)

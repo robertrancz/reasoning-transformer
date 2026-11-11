@@ -1,3 +1,4 @@
+using ReasonCs.Core.Autograd.Ops;
 using ReasonCs.Core.Tensors;
 
 namespace ReasonCs.Core.Transformer;
@@ -30,9 +31,13 @@ namespace ReasonCs.Core.Transformer;
 ///
 /// Architecture:
 ///   TokenEmbedding [VocabSize, EmbedDim]
-///   N × TransformerBlock
+///   N × TransformerBlock (pre-norm attention + SwiGLU MLP)
 ///   FinalLayerNorm
 ///   LM Head (unembedding): [EmbedDim, VocabSize]
+///
+/// Weight initialisation (called from constructor):
+///   Embedding and projection weights ~ N(0, 0.02²)  — standard GPT init
+///   LayerNorm gamma = 1, beta = 0
 /// </summary>
 public sealed class TransformerModel
 {
@@ -54,26 +59,84 @@ public sealed class TransformerModel
         FinalGamma = new Tensor([config.EmbedDim]);
         FinalBeta  = new Tensor([config.EmbedDim]);
         LMHead     = new Tensor([config.EmbedDim, config.VocabSize]);
+
+        InitWeights(seed: 42);
     }
 
-    /// <summary>Forward pass. Returns logits [SeqLen, VocabSize].</summary>
+    /// <summary>
+    /// Forward pass.
+    ///
+    /// tokens  : int[seqLen]  — token indices in [0, VocabSize)
+    /// returns : [seqLen, VocabSize]  — raw logits (pre-softmax)
+    /// </summary>
     public Tensor Forward(int[] tokens)
     {
-        // TODO: implement
-        throw new NotImplementedException();
+        int seqLen = tokens.Length;
+
+        // 1. Token embedding lookup: [seqLen, EmbedDim]
+        var x = EmbeddingOp.Forward(TokenEmbedding, tokens);
+
+        // 2. Transformer blocks (pre-norm residual)
+        foreach (var block in Blocks)
+            x = block.Forward(x, seqLen);
+
+        // 3. Final LayerNorm
+        var (xNorm, _, _) = LayerNormOp.Forward(x, FinalGamma, FinalBeta);
+
+        // 4. LM Head (unembedding): [seqLen, VocabSize]
+        return TensorOps.MatMul(xNorm, LMHead);
     }
 
     public void Backward(Tensor dLogits)
     {
-        // TODO: implement
+        // TODO: implement full backward pass
         throw new NotImplementedException();
     }
 
-    /// <summary>Greedy decoding — returns the argmax token at each position.</summary>
+    /// <summary>
+    /// Greedy decoding — appends <paramref name="maxNewTokens"/> tokens to the prompt,
+    /// choosing the argmax logit at each step.
+    /// </summary>
     public int[] GreedyDecode(int[] promptTokens, int maxNewTokens)
     {
-        // TODO: implement
+        // TODO: implement autoregressive decode loop
         throw new NotImplementedException();
+    }
+
+    // ── Weight initialisation ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Initialise all learnable weights.
+    ///
+    /// Projection matrices ~ N(0, σ²) with σ = 0.02 (standard GPT-2 init).
+    /// LayerNorm gamma = 1, beta = 0 (identity affine at start of training).
+    ///
+    /// Each weight tensor gets an independent seed derived from <paramref name="seed"/>
+    /// so the initialisation is deterministic but different per parameter.
+    /// </summary>
+    public void InitWeights(int seed = 42)
+    {
+        const float std = 0.02f;
+        int s = seed;
+
+        TensorOps.RandomNormal(TokenEmbedding, std: std, seed: s++);
+
+        foreach (var block in Blocks)
+        {
+            TensorOps.RandomNormal(block.Attn.Wq, std: std, seed: s++);
+            TensorOps.RandomNormal(block.Attn.Wk, std: std, seed: s++);
+            TensorOps.RandomNormal(block.Attn.Wv, std: std, seed: s++);
+            TensorOps.RandomNormal(block.Attn.Wo, std: std, seed: s++);
+            TensorOps.RandomNormal(block.Mlp.W1,  std: std, seed: s++);
+            TensorOps.RandomNormal(block.Mlp.W2,  std: std, seed: s++);
+            TensorOps.RandomNormal(block.Mlp.W3,  std: std, seed: s++);
+            // LayerNorm gamma is already 1 from TransformerBlock ctor;
+            // beta is already 0 from Tensor ctor.
+        }
+
+        TensorOps.Fill(FinalGamma, 1f);
+        // FinalBeta stays 0.
+        TensorOps.RandomNormal(LMHead, std: std, seed: s);
     }
 }
 

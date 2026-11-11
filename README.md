@@ -133,9 +133,9 @@ dotnet test ReasonCs.slnx
 | `GradientSanityTests` — CrossEntropy known loss, probs sum-to-one, grad check | 3 | ✅ passing |
 | `GradientSanityTests` — RoPE identity@pos0, backward identity@pos0, grad [1×8], grad [3×8] | 4 | ✅ passing |
 | `GradientSanityTests` — Embedding forward gather, backward scatter-add, grad check | 3 | ✅ passing |
-| `TransformerSmokeTests` — output shape, no NaN/Inf | 2 | ⏸ skipped (gates) |
+| `TransformerSmokeTests` — output shape [seqLen×VocabSize], no NaN/Inf | 2 | ✅ passing |
 
-**Total: 24 passing · 2 skipped · 0 failing**
+**Total: 26 passing · 0 skipped · 0 failing**
 
 Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries the name of the op that must be implemented first. Remove the `Skip` attribute once the op is done.
 
@@ -202,10 +202,10 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 | `CrossEntropyOp` | `Autograd/Ops/CrossEntropyOp.cs` | ✅ done |
 | `RoPEOp` | `Autograd/Ops/RoPEOp.cs` | ✅ done |
 | `EmbeddingOp` | `Autograd/Ops/EmbeddingOp.cs` | ✅ done |
-| `Attention` | `Transformer/Attention.cs` | 🔲 TODO |
-| `MLP` | `Transformer/MLP.cs` | 🔲 TODO |
-| `TransformerBlock` | `Transformer/TransformerBlock.cs` | 🔲 TODO |
-| `TransformerModel` | `Transformer/TransformerModel.cs` | 🔲 TODO |
+| `Attention` | `Transformer/Attention.cs` | ✅ Forward done |
+| `MLP` | `Transformer/MLP.cs` | ✅ Forward done |
+| `TransformerBlock` | `Transformer/TransformerBlock.cs` | ✅ Forward done |
+| `TransformerModel` | `Transformer/TransformerModel.cs` | ✅ Forward done |
 | `AdamW` | `Training/AdamW.cs` | 🔲 TODO |
 | `TrainingLoop` | `Training/TrainingLoop.cs` | 🔲 TODO |
 | `Tokenizer` | `Data/Tokenizer.cs` | 🔲 TODO |
@@ -218,10 +218,7 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 
 ### 🔜 What's Next (ordered by plan)
 
-1. **`Attention.Forward` + `Backward`** — wire all ops; smoke tests pass
-7. **`MLP.Forward` + `Backward`** — SwiGLU
-8. **`TransformerBlock` + `TransformerModel`** — assemble; smoke tests pass
-9. **`AdamW.Step`** + **`TrainingLoop`** — end-to-end training
+1. **`AdamW.Step`** + **`TrainingLoop`** — end-to-end training
 10. **`SyntheticDataset.Generate`** + **`Tokenizer`** — multi-step arithmetic data
 11. **Train & eval** — greedy baseline accuracy on held-out test set
 12. **`RewardModel`** — ORM head, then PRM

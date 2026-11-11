@@ -110,6 +110,12 @@ public static class TensorOps
     }
 
     /// <summary>
+    /// Fill every element with a constant value.
+    /// PyTorch equivalent:  torch.full(shape, fill_value)  /  tensor.fill_(value)
+    /// </summary>
+    public static void Fill(Tensor t, float value) => Array.Fill(t.Data, value);
+
+    /// <summary>
     /// Fill a tensor with random normal values using Box-Muller transform.
     /// PyTorch equivalent:  torch.nn.init.normal_(tensor, mean, std)
     /// </summary>

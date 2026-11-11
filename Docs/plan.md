@@ -14,8 +14,8 @@ todos:
     content: Write numerical finite-difference gradient checks for every operation, especially RoPE, Softmax, and LayerNorm, before building the full transformer — MatMul ✅, Softmax ✅, LayerNorm ✅, CrossEntropy ✅, RoPE ✅ — all gradient gates cleared
     status: in-progress
   - id: build-transformer
-    content: Build the Tiny Transformer architecture (RoPE, Multi-Head Attention, SwiGLU MLP, LayerNorm) and verify all gradients pass sanity tests
-    status: pending
+    content: Build the Tiny Transformer architecture (RoPE, Multi-Head Attention, SwiGLU MLP, LayerNorm) and verify all gradients pass sanity tests — Forward pass done ✅; Backward pass (full backprop) pending
+    status: in-progress
   - id: training-loop
     content: Implement the AdamW optimizer and a basic training loop with loss logging
     status: pending
