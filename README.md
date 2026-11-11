@@ -132,9 +132,10 @@ dotnet test ReasonCs.slnx
 | `GradientSanityTests` — LayerNorm mean/std, dx, dγ/dβ | 3 | ✅ passing |
 | `GradientSanityTests` — CrossEntropy known loss, probs sum-to-one, grad check | 3 | ✅ passing |
 | `GradientSanityTests` — RoPE identity@pos0, backward identity@pos0, grad [1×8], grad [3×8] | 4 | ✅ passing |
+| `GradientSanityTests` — Embedding forward gather, backward scatter-add, grad check | 3 | ✅ passing |
 | `TransformerSmokeTests` — output shape, no NaN/Inf | 2 | ⏸ skipped (gates) |
 
-**Total: 21 passing · 2 skipped · 0 failing**
+**Total: 24 passing · 2 skipped · 0 failing**
 
 Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries the name of the op that must be implemented first. Remove the `Skip` attribute once the op is done.
 
@@ -162,6 +163,10 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 #### `SoftmaxOp` — `src/ReasonCs.Core/Autograd/Ops/SoftmaxOp.cs`
 - **`Forward(x)`** — numerically stable (max subtraction), works on any rank, applies along last dim ✅
 - **`Backward(dOut, probs)`** — Jacobian-vector product: `dx_i = p_i · (dOut_i − dot(p, dOut))` ✅ verified by 1D + 2D gradient tests
+
+#### `EmbeddingOp` — `src/ReasonCs.Core/Autograd/Ops/EmbeddingOp.cs`
+- **`Forward(weight, tokens)`** — row-gather: `out[i] = weight[token[i], :]` ✅
+- **`Backward(dOut, tokens, vocabSize)`** — scatter-add: `dWeight[token[i]] += dOut[i]` (handles repeated tokens by accumulation) ✅ verified by gradient test
 
 #### `RoPEOp` — `src/ReasonCs.Core/Autograd/Ops/RoPEOp.cs`
 - **`Forward(x, position)`** — rotates pairs `(x_{2i}, x_{2i+1})` by `φᵢ = pos / base^(2i/D)` ✅
@@ -196,7 +201,7 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 | `LayerNormOp` | `Autograd/Ops/LayerNormOp.cs` | ✅ done |
 | `CrossEntropyOp` | `Autograd/Ops/CrossEntropyOp.cs` | ✅ done |
 | `RoPEOp` | `Autograd/Ops/RoPEOp.cs` | ✅ done |
-| `EmbeddingOp` | `Autograd/Ops/EmbeddingOp.cs` | 🔲 TODO |
+| `EmbeddingOp` | `Autograd/Ops/EmbeddingOp.cs` | ✅ done |
 | `Attention` | `Transformer/Attention.cs` | 🔲 TODO |
 | `MLP` | `Transformer/MLP.cs` | 🔲 TODO |
 | `TransformerBlock` | `Transformer/TransformerBlock.cs` | 🔲 TODO |
@@ -213,8 +218,7 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 
 ### 🔜 What's Next (ordered by plan)
 
-1. **`EmbeddingOp`** — lookup + scatter-add gradient
-6. **`Attention.Forward` + `Backward`** — wire all ops; smoke tests pass
+1. **`Attention.Forward` + `Backward`** — wire all ops; smoke tests pass
 7. **`MLP.Forward` + `Backward`** — SwiGLU
 8. **`TransformerBlock` + `TransformerModel`** — assemble; smoke tests pass
 9. **`AdamW.Step`** + **`TrainingLoop`** — end-to-end training

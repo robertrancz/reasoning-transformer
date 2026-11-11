@@ -145,6 +145,91 @@ public class GradientSanityTests
     }
 
     // =========================================================================
+    // EmbeddingOp
+    // =========================================================================
+
+    [Fact]
+    public void Embedding_Forward_CorrectRowGather()
+    {
+        // weight [4, 3], tokens = [2, 0, 2]
+        // out should be rows 2, 0, 2 of weight.
+        var weight = new Tensor([4, 3], [
+            1f, 2f, 3f,   // row 0
+            4f, 5f, 6f,   // row 1
+            7f, 8f, 9f,   // row 2
+           10f,11f,12f]); // row 3
+        int[] tokens = [2, 0, 2];
+
+        var output = EmbeddingOp.Forward(weight, tokens);
+
+        Assert.Equal([3, 3], output.Shape);
+        // row 0 of output = row 2 of weight
+        Assert.Equal(7f, output.Data[0]); Assert.Equal(8f, output.Data[1]); Assert.Equal(9f, output.Data[2]);
+        // row 1 of output = row 0 of weight
+        Assert.Equal(1f, output.Data[3]); Assert.Equal(2f, output.Data[4]); Assert.Equal(3f, output.Data[5]);
+        // row 2 of output = row 2 of weight (same token repeated)
+        Assert.Equal(7f, output.Data[6]); Assert.Equal(8f, output.Data[7]); Assert.Equal(9f, output.Data[8]);
+    }
+
+    [Fact]
+    public void Embedding_Backward_ScatterAdd()
+    {
+        // dOut [3, 3], tokens = [2, 0, 2]
+        // dWeight[2] should be dOut[0] + dOut[2] (token 2 appears twice)
+        // dWeight[0] should be dOut[1]
+        // dWeight[1] and dWeight[3] should be zero
+        var dOut = new Tensor([3, 3], [
+            0.1f, 0.2f, 0.3f,   // position 0 → token 2
+            0.4f, 0.5f, 0.6f,   // position 1 → token 0
+            0.7f, 0.8f, 0.9f]); // position 2 → token 2
+        int[] tokens = [2, 0, 2];
+
+        var dWeight = EmbeddingOp.Backward(dOut, tokens, vocabSize: 4);
+
+        Assert.Equal([4, 3], dWeight.Shape);
+        // dWeight[0] = dOut[1]
+        Assert.Equal(0.4f, dWeight.Data[0], precision: 5);
+        Assert.Equal(0.5f, dWeight.Data[1], precision: 5);
+        Assert.Equal(0.6f, dWeight.Data[2], precision: 5);
+        // dWeight[1] = 0 (token 1 never used)
+        Assert.Equal(0f, dWeight.Data[3]); Assert.Equal(0f, dWeight.Data[4]); Assert.Equal(0f, dWeight.Data[5]);
+        // dWeight[2] = dOut[0] + dOut[2]  (token 2 used twice)
+        Assert.Equal(0.1f + 0.7f, dWeight.Data[6],  precision: 5);
+        Assert.Equal(0.2f + 0.8f, dWeight.Data[7],  precision: 5);
+        Assert.Equal(0.3f + 0.9f, dWeight.Data[8],  precision: 5);
+        // dWeight[3] = 0 (token 3 never used)
+        Assert.Equal(0f, dWeight.Data[9]); Assert.Equal(0f, dWeight.Data[10]); Assert.Equal(0f, dWeight.Data[11]);
+    }
+
+    [Fact]
+    public void Embedding_GradientCheck()
+    {
+        // weight [8, 4], tokens = [3, 1, 3, 0]  (token 3 appears twice)
+        // Loss = sum(w * Forward(weight, tokens))
+        // dWeight = Backward(w, tokens, vocabSize=8)
+        var weight = new Tensor([8, 4]);
+        TensorOps.RandomNormal(weight, seed: 11);
+        int[] tokens = [3, 1, 3, 0];
+        int seqLen   = tokens.Length;
+        int embedDim = 4;
+
+        // Fixed upstream gradient (acts as the dOut / "loss weights")
+        var w = new Tensor([seqLen, embedDim], [
+             0.1f, -0.2f,  0.3f, -0.1f,
+            -0.2f,  0.1f, -0.1f,  0.2f,
+             0.3f, -0.1f,  0.2f, -0.3f,
+            -0.1f,  0.2f, -0.2f,  0.1f]);
+
+        var dWeight = EmbeddingOp.Backward(w, tokens, vocabSize: 8);
+
+        // NumericalGradientHelper perturbs weight.Data[i] one at a time.
+        // Forward uses those rows → the gradient flows through scatter-add.
+        NumericalGradientHelper.Check(weight, dWeight,
+            forward: () => TensorOps.Sum(
+                TensorOps.Multiply(EmbeddingOp.Forward(weight, tokens), w)));
+    }
+
+    // =========================================================================
     // LayerNormOp
     // =========================================================================
 
