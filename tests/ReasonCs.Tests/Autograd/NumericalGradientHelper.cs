@@ -1,0 +1,59 @@
+using ReasonCs.Core.Tensors;
+
+namespace ReasonCs.Tests.Autograd;
+
+/// <summary>
+/// Utility for numerical finite-difference gradient checking.
+///
+/// For each parameter p_i, estimate the gradient as:
+///   (f(p + ε·eᵢ) - f(p - ε·eᵢ)) / (2ε)
+///
+/// Then compare against the analytical gradient.
+/// A relative error below <see cref="Tolerance"/> is considered passing.
+/// </summary>
+public static class NumericalGradientHelper
+{
+    // float32 optimal eps ≈ sqrt(machine_epsilon) ≈ sqrt(1.19e-7) ≈ 3.5e-4.
+    // We use 5e-4 — a safe value that minimises both truncation error (O(eps²))
+    // and catastrophic cancellation in (fPlus - fMinus) when |Loss| is large.
+    //
+    // Tolerance 0.01 (1%) is the standard threshold for float32 gradient checks
+    // (PyTorch uses the same default in torch.autograd.gradcheck for float32).
+    public const float Epsilon   = 5e-4f;
+    public const float Tolerance = 0.01f;
+
+    /// <summary>
+    /// Check that the analytical gradient of <paramref name="analyticalGrad"/>
+    /// matches the numerical estimate of <paramref name="forward"/> w.r.t. <paramref name="param"/>.
+    /// </summary>
+    public static void Check(
+        Tensor param,
+        Tensor analyticalGrad,
+        Func<float> forward,
+        float eps       = Epsilon,
+        float tolerance = Tolerance)
+    {
+        for (int i = 0; i < param.Size; i++)
+        {
+            float orig = param.Data[i];
+
+            param.Data[i] = orig + eps;
+            float fPlus = forward();
+
+            param.Data[i] = orig - eps;
+            float fMinus = forward();
+
+            param.Data[i] = orig; // restore
+
+            float numerical   = (fPlus - fMinus) / (2f * eps);
+            float analytical  = analyticalGrad.Data[i];
+            float relError    = MathF.Abs(numerical - analytical)
+                              / (MathF.Abs(numerical) + MathF.Abs(analytical) + 1e-8f);
+
+            if (relError > tolerance)
+                throw new Exception(
+                    $"Gradient check FAILED at index {i}: " +
+                    $"numerical={numerical:F6}, analytical={analytical:F6}, relError={relError:F6}");
+        }
+    }
+}
