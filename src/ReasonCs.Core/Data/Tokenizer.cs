@@ -37,14 +37,13 @@ public sealed class Tokenizer
     {
         var t = new Tokenizer();
         int id = 0;
-        foreach (var text in texts)
-            foreach (var ch in text)
-                if (!t._charToId.ContainsKey(ch))
-                {
-                    t._charToId[ch] = id;
-                    t._idToChar[id] = ch;
-                    id++;
-                }
+        foreach (var ch in texts.SelectMany(text => text)
+                                .Where(ch => !t._charToId.ContainsKey(ch)))
+        {
+            t._charToId[ch] = id;
+            t._idToChar[id] = ch;
+            id++;
+        }
         return t;
     }
 

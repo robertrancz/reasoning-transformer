@@ -290,12 +290,12 @@ public class GradientSanityTests
         var w     = new Tensor([2, 4], [ 0.1f, -0.2f,  0.1f,  0.0f,
                                         -0.1f,  0.2f, -0.1f,  0.1f]);
 
-        var (yFwd, mean, rstd)     = LayerNormOp.Forward(x, gamma, beta);
-        var (dxBwd, dGamma, dBeta) = LayerNormOp.Backward(w, x, gamma, mean, rstd);
+        var (_, mean, rstd)    = LayerNormOp.Forward(x, gamma, beta);
+        var (_, dGamma, dBeta) = LayerNormOp.Backward(w, x, gamma, mean, rstd);
 
         float Loss()
         {
-            var (y, m, r) = LayerNormOp.Forward(x, gamma, beta);
+            var (y, _, _) = LayerNormOp.Forward(x, gamma, beta);
             return TensorOps.Sum(TensorOps.Multiply(y, w));
         }
 
@@ -342,7 +342,6 @@ public class GradientSanityTests
         var w = new Tensor([1, 8], [ 0.1f, -0.2f,  0.2f, -0.1f,
                                     -0.1f,  0.3f, -0.2f,  0.1f]);
 
-        var y  = RoPEOp.Forward(x, position);
         var dx = RoPEOp.Backward(w, position);   // dOut = w
 
         NumericalGradientHelper.Check(x, dx,
@@ -377,7 +376,7 @@ public class GradientSanityTests
         // loss = -log(0.25) = log(4) ≈ 1.38629
         var logits  = new Tensor([1, 4], [0f, 0f, 0f, 0f]);
         int[] targets = [2];
-        var (loss, probs) = CrossEntropyOp.Forward(logits, targets);
+        var (loss, _) = CrossEntropyOp.Forward(logits, targets);
         Assert.Equal(MathF.Log(4f), loss, precision: 4);
     }
 

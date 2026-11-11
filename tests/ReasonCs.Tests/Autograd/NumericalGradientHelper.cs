@@ -44,12 +44,12 @@ public static class NumericalGradientHelper
         {
             float orig = param.Data[i];
 
-            param.Data[i] = orig + eps;
-            float fPlus = forward();
-
-            param.Data[i] = orig - eps;
-            float fMinus = forward();
-
+            // Assign then immediately evaluate via the closure — each Eval call
+            // constitutes the "read" of the assigned value.  Using a helper method
+            // makes this pairing visible to the static analyser (which cannot see
+            // that forward() reads param.Data[i] through the captured reference).
+            float fPlus  = Eval(param, i, orig + eps, forward);
+            float fMinus = Eval(param, i, orig - eps, forward);
             param.Data[i] = orig; // restore
 
             float numerical   = (fPlus - fMinus) / (2f * eps);
@@ -68,5 +68,18 @@ public static class NumericalGradientHelper
                     $"numerical={numerical:F6}, analytical={analytical:F6}, " +
                     $"absError={absError:F6}, relError={relError:F6}");
         }
+    }
+
+    /// <summary>
+    /// Assign <paramref name="val"/> to <c>param.Data[idx]</c>, evaluate
+    /// <paramref name="forward"/>, and return the result.
+    /// The assignment and evaluation are paired in the same method body so that
+    /// the static analyser can see that the stored value is consumed before any
+    /// subsequent write to the same index.
+    /// </summary>
+    private static float Eval(Tensor param, int idx, float val, Func<float> forward)
+    {
+        param.Data[idx] = val;
+        return forward();
     }
 }
