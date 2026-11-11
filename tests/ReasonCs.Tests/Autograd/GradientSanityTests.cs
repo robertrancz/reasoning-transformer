@@ -223,11 +223,65 @@ public class GradientSanityTests
     /// The backward pass must be verified against finite differences
     /// before RoPE is integrated into the Attention module.
     /// </summary>
-    [Fact(Skip = "Implement RoPEOp first")]
+    [Fact]
+    public void RoPE_ForwardAtPositionZero_IsIdentity()
+    {
+        // At position = 0 every angle is 0 → cos = 1, sin = 0 → output equals input.
+        var x = new Tensor([2, 8], [1f, 2f, 3f, 4f, 5f, 6f, 7f, 8f,
+                                    -1f, 0f, 0.5f, -0.5f, 1.5f, -1.5f, 2f, -2f]);
+        var y = RoPEOp.Forward(x, position: 0);
+        for (int i = 0; i < x.Size; i++)
+            Assert.Equal(x.Data[i], y.Data[i], precision: 5);
+    }
+
+    [Fact]
+    public void RoPE_BackwardAtPositionZero_IsIdentity()
+    {
+        // At position = 0 rotation is identity, so backward is also identity.
+        var dOut = new Tensor([1, 8], [0.1f, -0.2f, 0.3f, -0.4f, 0.5f, -0.6f, 0.7f, -0.8f]);
+        var dx   = RoPEOp.Backward(dOut, position: 0);
+        for (int i = 0; i < dOut.Size; i++)
+            Assert.Equal(dOut.Data[i], dx.Data[i], precision: 5);
+    }
+
+    [Fact]
     public void RoPE_GradientCheck()
     {
-        // TODO: apply RoPE to a [1, 8] query vector at position 3, check dx
-        throw new NotImplementedException();
+        // Apply RoPE to a [1, 8] query vector at a non-trivial position (position=3).
+        // Loss = sum(w * RoPE(x, position))  →  dOut = w,  dx = RoPE_Backward(w, position)
+        //
+        // Using small values to keep |Loss| small and avoid float32 cancellation.
+        const int position = 3;
+        var x = new Tensor([1, 8], [ 0.5f, -0.3f,  0.2f, -0.1f,
+                                      0.4f, -0.2f,  0.1f,  0.3f]);
+        var w = new Tensor([1, 8], [ 0.1f, -0.2f,  0.2f, -0.1f,
+                                    -0.1f,  0.3f, -0.2f,  0.1f]);
+
+        var y  = RoPEOp.Forward(x, position);
+        var dx = RoPEOp.Backward(w, position);   // dOut = w
+
+        NumericalGradientHelper.Check(x, dx,
+            forward: () => TensorOps.Sum(TensorOps.Multiply(RoPEOp.Forward(x, position), w)));
+    }
+
+    [Fact]
+    public void RoPE_GradientCheck_MultipleBatch()
+    {
+        // Check that RoPE works correctly over a batch dimension [3, 8].
+        const int position = 7;
+        var x = new Tensor([3, 8], [
+             0.5f, -0.3f,  0.2f, -0.1f,  0.4f, -0.2f,  0.1f,  0.3f,
+            -0.4f,  0.2f, -0.1f,  0.5f, -0.3f,  0.1f, -0.2f,  0.4f,
+             0.1f,  0.3f, -0.5f,  0.2f,  0.3f, -0.4f,  0.5f, -0.1f]);
+        var w = new Tensor([3, 8], [
+             0.1f, -0.2f,  0.2f, -0.1f, -0.1f,  0.3f, -0.2f,  0.1f,
+            -0.1f,  0.2f,  0.1f, -0.3f,  0.2f, -0.1f,  0.1f, -0.2f,
+             0.2f, -0.1f,  0.1f,  0.2f, -0.3f,  0.1f,  0.0f, -0.1f]);
+
+        var dx = RoPEOp.Backward(w, position);
+
+        NumericalGradientHelper.Check(x, dx,
+            forward: () => TensorOps.Sum(TensorOps.Multiply(RoPEOp.Forward(x, position), w)));
     }
 
     [Fact]
