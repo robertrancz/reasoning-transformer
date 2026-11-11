@@ -15,9 +15,9 @@ namespace ReasonCs.Core.Training;
 ///   optimizer.step()
 ///
 ///   # Our equivalent (manual):
-///   optimizer.ZeroGrad(grads)
+///   model.ZeroGrad()
 ///   model.Backward(dLogits)        // fills grad tensors manually
-///   optimizer.Step(paramGrads)
+///   optimizer.Step(model.GetParamGrads())
 ///
 /// Key difference from Adam: weight decay is applied directly to the weights
 /// (θ -= lr·λ·θ) rather than being folded into the gradient. This is
@@ -52,13 +52,53 @@ public sealed class AdamW
         WeightDecay  = weightDecay;
     }
 
+    /// <summary>
+    /// Run one AdamW update step.
+    ///
+    /// paramGrads : all (parameter, gradient) pairs from model.GetParamGrads()
+    ///
+    /// Moment vectors are lazily allocated per parameter on first call and
+    /// reused across steps (keyed by the Tensor object identity).
+    /// </summary>
     public void Step(IEnumerable<(Tensor param, Tensor grad)> paramGrads)
     {
         _step++;
-        // TODO: implement AdamW update
-        throw new NotImplementedException();
+        float bc1 = 1f - MathF.Pow(Beta1, _step);  // bias-correction denominator 1
+        float bc2 = 1f - MathF.Pow(Beta2, _step);  // bias-correction denominator 2
+
+        foreach (var (param, grad) in paramGrads)
+        {
+            // Lazily allocate first-moment (m) and second-moment (v) vectors
+            if (!_state.TryGetValue(param, out var state))
+            {
+                state = (new float[param.Size], new float[param.Size]);
+                _state[param] = state;
+            }
+            var (m, v) = state;
+
+            for (int i = 0; i < param.Size; i++)
+            {
+                float g = grad.Data[i];
+
+                // Moment updates
+                m[i] = Beta1 * m[i] + (1f - Beta1) * g;
+                v[i] = Beta2 * v[i] + (1f - Beta2) * g * g;
+
+                // Bias-corrected estimates
+                float mHat = m[i] / bc1;
+                float vHat = v[i] / bc2;
+
+                // θ -= lr · (m̂ / (√v̂ + ε) + λ · θ)
+                param.Data[i] -= LearningRate * (mHat / (MathF.Sqrt(vHat) + Epsilon)
+                                               + WeightDecay * param.Data[i]);
+            }
+        }
     }
 
+    /// <summary>
+    /// Zero out a collection of gradient tensors.
+    /// Call before Backward() to avoid accumulating across batches.
+    /// </summary>
     public void ZeroGrad(IEnumerable<Tensor> grads)
     {
         foreach (var g in grads)

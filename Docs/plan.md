@@ -5,20 +5,20 @@ todos:
     content: Implement a naive (loop-based) correct MatMul first, fully tested, before any SIMD optimization
     status: done
   - id: init-tensor-core
-    content: Implement minimalist tensor operations and core math functions; add SIMD acceleration behind the same MatMul interface only after correctness is verified
+    content: Implement minimalist tensor operations and core math functions — MatMul, Transpose, Add, Multiply, Scale, Fill, AddTo, RandomNormal all done ✅; SIMD fast-path (AVX2) stubbed for Phase 2
     status: in-progress
   - id: build-autograd
     content: Implement manual backward passes (not a tape-based autograd engine) for all essential ops — MatMul ✅, Softmax ✅, LayerNorm ✅, CrossEntropyLoss ✅, RoPE ✅, Embedding ✅ — ALL OPS DONE
-    status: in-progress
+    status: done
   - id: gradient-sanity-tests
-    content: Write numerical finite-difference gradient checks for every operation, especially RoPE, Softmax, and LayerNorm, before building the full transformer — MatMul ✅, Softmax ✅, LayerNorm ✅, CrossEntropy ✅, RoPE ✅ — all gradient gates cleared
-    status: in-progress
+    content: Write numerical finite-difference gradient checks for every operation — MatMul ✅, Softmax ✅, LayerNorm ✅, CrossEntropy ✅, RoPE ✅, Embedding ✅ — 26 gradient gates cleared; NumericalGradientHelper uses mixed atol+rtol criterion
+    status: done
   - id: build-transformer
-    content: Build the Tiny Transformer architecture (RoPE, Multi-Head Attention, SwiGLU MLP, LayerNorm) and verify all gradients pass sanity tests — Forward pass done ✅; Backward pass (full backprop) pending
-    status: in-progress
+    content: Build the Tiny Transformer (RoPE, Multi-Head Attention, SwiGLU MLP, LayerNorm) — Forward ✅ + Backward ✅ for Attention, MLP, TransformerBlock, TransformerModel; backward integration tests pass (no NaN/Inf, loss decreases after gradient steps)
+    status: done
   - id: training-loop
-    content: Implement the AdamW optimizer and a basic training loop with loss logging
-    status: pending
+    content: Implement the AdamW optimizer (decoupled weight decay, bias-corrected moments) and a basic training loop (forward → CrossEntropy → ZeroGrad → backward → optimizer.Step → log). Done ✅; GreedyDecode also implemented.
+    status: done
   - id: design-step-representation
     content: Define what a "reasoning step" is (e.g., a decoded sequence of 20–50 tokens), the branching factor for MCTS (top-k=4–8 candidates per step), and the overall search budget before building MCTS or PRM
     status: pending

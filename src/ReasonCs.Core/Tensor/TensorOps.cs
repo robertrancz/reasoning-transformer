@@ -116,6 +116,20 @@ public static class TensorOps
     public static void Fill(Tensor t, float value) => Array.Fill(t.Data, value);
 
     /// <summary>
+    /// In-place element-wise addition: dest += src.
+    /// Tensors must have equal size; dest's shape is preserved.
+    /// PyTorch equivalent:  dest.add_(src)
+    /// </summary>
+    public static void AddTo(Tensor dest, Tensor src)
+    {
+        if (dest.Size != src.Size)
+            throw new ArgumentException(
+                $"Size mismatch in AddTo: {dest.Size} vs {src.Size}.");
+        for (int i = 0; i < dest.Size; i++)
+            dest.Data[i] += src.Data[i];
+    }
+
+    /// <summary>
     /// Fill a tensor with random normal values using Box-Muller transform.
     /// PyTorch equivalent:  torch.nn.init.normal_(tensor, mean, std)
     /// </summary>

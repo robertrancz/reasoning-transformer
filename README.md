@@ -133,11 +133,10 @@ dotnet test ReasonCs.slnx
 | `GradientSanityTests` — CrossEntropy known loss, probs sum-to-one, grad check | 3 | ✅ passing |
 | `GradientSanityTests` — RoPE identity@pos0, backward identity@pos0, grad [1×8], grad [3×8] | 4 | ✅ passing |
 | `GradientSanityTests` — Embedding forward gather, backward scatter-add, grad check | 3 | ✅ passing |
-| `TransformerSmokeTests` — output shape [seqLen×VocabSize], no NaN/Inf | 2 | ✅ passing |
+| `TransformerSmokeTests` — output shape, no NaN/Inf (forward) | 2 | ✅ passing |
+| `TransformerSmokeTests` — backward no NaN/Inf, gradients non-zero, loss decreases, greedy decode | 4 | ✅ passing |
 
-**Total: 26 passing · 0 skipped · 0 failing**
-
-Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries the name of the op that must be implemented first. Remove the `Skip` attribute once the op is done.
+**Total: 30 passing · 0 skipped · 0 failing**
 
 ---
 
@@ -154,6 +153,8 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
   - `Add`, `Multiply` — element-wise ops ✅
   - `Scale(t, scalar)` — scalar multiplication ✅
   - `RandomNormal(t, mean, std, seed)` — Box-Muller initialization ✅
+  - `Fill(t, value)` — constant fill ✅
+  - `AddTo(dest, src)` — in-place `dest += src` (used by all backward passes) ✅
   - *(SIMD fast-path stubbed as `// TODO: MatMulSimd` — Phase 2)*
 
 #### `MatMulOp` — `src/ReasonCs.Core/Autograd/Ops/MatMulOp.cs`
@@ -189,6 +190,37 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 - Calibrated for float32: `eps=5e-4`, `rtol=0.01` (1%), `atol=1e-3` (for near-zero gradients) with documented rationale
 - Mixed `atol + rtol` criterion mirrors PyTorch `torch.autograd.gradcheck` — prevents false failures when both analytical and numerical are correctly zero but float32 rounding introduces tiny noise
 
+#### `Attention` — `src/ReasonCs.Core/Transformer/Attention.cs`
+- **`Forward(x, seqLen)`** — Q/K/V projections, RoPE per head/position, scaled dot-product, causal mask, per-head softmax, output projection ✅
+- **`Backward(dOut)`** — reverses Wo, softmax (via `SoftmaxOp.Backward`), scale, `RoPEOp.Backward` per position, and all four projection gradients (DWq, DWk, DWv, DWo) ✅
+- Caches: per-head post-RoPE Qh/Kh, Vh, probs, attnOut, input x
+
+#### `MLP` — `src/ReasonCs.Core/Transformer/MLP.cs`
+- **`Forward(x)`** — `gate = x@W1`, `up = x@W2`, `gated = SiLU(gate)⊙up`, `out = gated@W3` ✅
+- **`Backward(dOut)`** — reverses down-projection, SwiGLU element-wise gate (SiLU derivative), and gate/up projections (DW1, DW2, DW3) ✅
+- Caches: input x, gate (pre-SiLU), up, gated
+
+#### `TransformerBlock` — `src/ReasonCs.Core/Transformer/TransformerBlock.cs`
+- **`Forward(x, seqLen)`** — Pre-Norm: LN1→Attn→residual, LN2→MLP→residual ✅
+- **`Backward(dOut)`** — pre-norm residual chain: `dx1 = dOut + MLP.Bwd(LN2.Bwd(dOut))`, `dx = dx1 + Attn.Bwd(LN1.Bwd(dx1))` ✅
+- Accumulates DGamma1/DBeta1/DGamma2/DBeta2; caches both LN intermediates and both residual states
+
+#### `TransformerModel` — `src/ReasonCs.Core/Transformer/TransformerModel.cs`
+- **`Forward(tokens)`** — Embedding → N×Block → FinalLN → LMHead ✅
+- **`Backward(dLogits)`** — dLogits→LMHead→FinalLN→Blocks[N-1..0]→Embedding ✅
+- **`ZeroGrad()`** — clears all gradient accumulators before each backward ✅
+- **`GetParamGrads()`** — enumerates all `(param, grad)` pairs for the optimizer ✅
+- **`GreedyDecode(prompt, maxNewTokens)`** — argmax next-token autoregressive loop ✅
+- **`InitWeights(seed)`** — N(0, 0.02²) for projections; γ=1, β=0 for LayerNorm ✅
+
+#### `AdamW` — `src/ReasonCs.Core/Training/AdamW.cs`
+- **`Step(paramGrads)`** — lazily-allocated first/second moment vectors, bias correction, decoupled weight decay: `θ -= lr·(m̂/(√v̂+ε) + λ·θ)` ✅
+- **`ZeroGrad(grads)`** — convenience wrapper ✅
+
+#### `TrainingLoop` — `src/ReasonCs.Core/Training/TrainingLoop.cs`
+- **`Train(model, optimizer, batches, maxSteps)`** — forward → CrossEntropy → `ZeroGrad` → backward → `optimizer.Step` → log every `LogEvery` steps ✅
+- Returns the final loss (useful for assertions in integration tests) ✅
+
 #### `MctsNode` — `src/ReasonCs.Core/Reasoning/MctsNode.cs`
 - Tree node with `Tokens`, `Parent`, `Children`, `Visits`, `TotalValue`, `PriorScore` ✅
 - `Q` property (mean value), `UCB(explorationC)` — Upper Confidence Bound ✅
@@ -197,18 +229,7 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 
 | Module | File | Status |
 |---|---|---|
-| `SoftmaxOp` | `Autograd/Ops/SoftmaxOp.cs` | ✅ done |
-| `LayerNormOp` | `Autograd/Ops/LayerNormOp.cs` | ✅ done |
-| `CrossEntropyOp` | `Autograd/Ops/CrossEntropyOp.cs` | ✅ done |
-| `RoPEOp` | `Autograd/Ops/RoPEOp.cs` | ✅ done |
-| `EmbeddingOp` | `Autograd/Ops/EmbeddingOp.cs` | ✅ done |
-| `Attention` | `Transformer/Attention.cs` | ✅ Forward done |
-| `MLP` | `Transformer/MLP.cs` | ✅ Forward done |
-| `TransformerBlock` | `Transformer/TransformerBlock.cs` | ✅ Forward done |
-| `TransformerModel` | `Transformer/TransformerModel.cs` | ✅ Forward done |
-| `AdamW` | `Training/AdamW.cs` | 🔲 TODO |
-| `TrainingLoop` | `Training/TrainingLoop.cs` | 🔲 TODO |
-| `Tokenizer` | `Data/Tokenizer.cs` | 🔲 TODO |
+| `Tokenizer` | `Data/Tokenizer.cs` | ✅ done (char-level) |
 | `SyntheticDataset` | `Data/SyntheticDataset.cs` | 🔲 TODO |
 | `Evaluator` | `Inference/Evaluator.cs` | 🔲 TODO |
 | `RewardModel` | `Reasoning/RewardModel.cs` | 🔲 TODO |
@@ -218,11 +239,10 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 
 ### 🔜 What's Next (ordered by plan)
 
-1. **`AdamW.Step`** + **`TrainingLoop`** — end-to-end training
-10. **`SyntheticDataset.Generate`** + **`Tokenizer`** — multi-step arithmetic data
-11. **Train & eval** — greedy baseline accuracy on held-out test set
-12. **`RewardModel`** — ORM head, then PRM
-13. **`MctsSearch`** — full MCTS loop; compare against greedy baseline
+1. **`SyntheticDataset.Generate`** — chained multi-step arithmetic problems (A=2, B=A+1, C=B×3, C=?)
+2. **Train & eval** — fit on synthetic data, measure greedy baseline accuracy on held-out test set
+3. **`RewardModel`** — ORM scoring head (final-answer correctness), then extend to PRM (step-level)
+4. **`MctsSearch`** — full MCTS loop over reasoning steps; compare against greedy baseline
 
 ---
 
@@ -255,12 +275,12 @@ Every handcrafted implementation carries a full `/// PyTorch equivalent:` sectio
 | `CrossEntropyOp` | `F.cross_entropy(logits, targets)` | Fused log-softmax + NLL for stability |
 | `RoPEOp` | `LlamaRotaryEmbedding` (HuggingFace) | No PyTorch built-in; backward = inverse rotation |
 | `EmbeddingOp` | `nn.Embedding(vocab, dim)` | Backward = scatter-add (sparse grad) |
-| `Attention` | `nn.MultiheadAttention` + `F.scaled_dot_product_attention` | Uses RoPE instead of learned positional bias |
-| `MLP` (SwiGLU) | `F.silu(x @ W1) * (x @ W2)) @ W3` | No `nn.SwiGLU` exists; 3 matrices vs. standard 2 |
-| `TransformerBlock` | `nn.TransformerEncoderLayer` (Pre-Norm) | Pre-Norm: normalize *before* sublayer |
-| `TransformerModel` | nanoGPT / `nn.Transformer` | Manually managed weights; no `nn.Module` |
-| `AdamW` | `torch.optim.AdamW` | Decoupled weight decay (not folded into gradient) |
-| `TrainingLoop` | `loss.backward()` + `optimizer.step()` | Backward is a hand-written reverse pass |
+| `Attention` | `nn.MultiheadAttention` + `F.scaled_dot_product_attention` | Uses RoPE; full backward implemented |
+| `MLP` (SwiGLU) | `F.silu(x @ W1) * (x @ W2)) @ W3` | No `nn.SwiGLU` built-in; 3 matrices, SiLU′ in backward |
+| `TransformerBlock` | `nn.TransformerEncoderLayer` (Pre-Norm) | Pre-Norm residual; backward chains MLP↔Attn in reverse |
+| `TransformerModel` | nanoGPT / `nn.Transformer` | `GetParamGrads()` replaces `model.parameters()` |
+| `AdamW` | `torch.optim.AdamW` | Decoupled weight decay; lazy moment allocation per param |
+| `TrainingLoop` | `loss.backward()` + `optimizer.step()` | Manual reverse pass; `ZeroGrad()` before each backward |
 | `Tokenizer` | `tiktoken` / `AutoTokenizer` | Character-level; vocabulary from corpus |
 | `SyntheticDataset` | `torch.utils.data.Dataset` | Programmatic step labels (no human annotation) |
 | `Evaluator` | `model.eval()` + `torch.no_grad()` + `argmax` | Greedy decoding accuracy |
