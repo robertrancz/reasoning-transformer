@@ -230,10 +230,53 @@ public class GradientSanityTests
         throw new NotImplementedException();
     }
 
-    [Fact(Skip = "Implement CrossEntropyOp first")]
+    [Fact]
+    public void CrossEntropy_OutputLoss_KnownResult()
+    {
+        // With a single example and uniform logits, the loss should be -log(1/C) = log(C).
+        // logits = [0, 0, 0, 0], target = 2  →  p = [0.25, 0.25, 0.25, 0.25]
+        // loss = -log(0.25) = log(4) ≈ 1.38629
+        var logits  = new Tensor([1, 4], [0f, 0f, 0f, 0f]);
+        int[] targets = [2];
+        var (loss, probs) = CrossEntropyOp.Forward(logits, targets);
+        Assert.Equal(MathF.Log(4f), loss, precision: 4);
+    }
+
+    [Fact]
+    public void CrossEntropy_Probs_SumToOne()
+    {
+        var logits  = new Tensor([3, 8]);
+        int[] targets = [0, 3, 7];
+        TensorOps.RandomNormal(logits, seed: 42);
+        var (_, probs) = CrossEntropyOp.Forward(logits, targets);
+
+        for (int b = 0; b < 3; b++)
+        {
+            float rowSum = 0f;
+            for (int i = 0; i < 8; i++) rowSum += probs[b, i];
+            Assert.Equal(1f, rowSum, precision: 5);
+        }
+    }
+
+    [Fact]
     public void CrossEntropy_GradientCheck()
     {
-        // TODO: [4, VocabSize=16] logits, 4 targets, check dLogits
-        throw new NotImplementedException();
+        // [4 examples, VocabSize=16] logits; check dLogits against finite differences.
+        // Small explicit values keep |Loss| small — avoids float32 cancellation.
+        var logits  = new Tensor([4, 16], Enumerable.Range(0, 64)
+                          .Select(i => (i % 16 == 0 ? 0.5f : -0.1f) + 0.02f * i)
+                          .ToArray());
+        int[] targets = [0, 3, 7, 15];
+
+        var (_, probs)   = CrossEntropyOp.Forward(logits, targets);
+        var dLogits      = CrossEntropyOp.Backward(probs, targets);
+
+        float Loss()
+        {
+            var (l, _) = CrossEntropyOp.Forward(logits, targets);
+            return l;
+        }
+
+        NumericalGradientHelper.Check(logits, dLogits, Loss);
     }
 }

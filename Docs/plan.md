@@ -8,10 +8,10 @@ todos:
     content: Implement minimalist tensor operations and core math functions; add SIMD acceleration behind the same MatMul interface only after correctness is verified
     status: in-progress
   - id: build-autograd
-    content: Implement manual backward passes (not a tape-based autograd engine) for all essential ops — MatMul ✅, Softmax ✅, LayerNorm ✅, CrossEntropyLoss, RoPE, Embedding
+    content: Implement manual backward passes (not a tape-based autograd engine) for all essential ops — MatMul ✅, Softmax ✅, LayerNorm ✅, CrossEntropyLoss ✅, RoPE, Embedding
     status: in-progress
   - id: gradient-sanity-tests
-    content: Write numerical finite-difference gradient checks for every operation, especially RoPE, Softmax, and LayerNorm, before building the full transformer — MatMul ✅, Softmax ✅, LayerNorm ✅, RoPE and CrossEntropy pending
+    content: Write numerical finite-difference gradient checks for every operation, especially RoPE, Softmax, and LayerNorm, before building the full transformer — MatMul ✅, Softmax ✅, LayerNorm ✅, CrossEntropy ✅, RoPE pending
     status: in-progress
   - id: build-transformer
     content: Build the Tiny Transformer architecture (RoPE, Multi-Head Attention, SwiGLU MLP, LayerNorm) and verify all gradients pass sanity tests

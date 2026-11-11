@@ -130,10 +130,11 @@ dotnet test ReasonCs.slnx
 | `GradientSanityTests` — MatMul dA, dB, non-uniform loss | 3 | ✅ passing |
 | `GradientSanityTests` — Softmax uniform, sums-to-one, grad 1D, grad 2D | 4 | ✅ passing |
 | `GradientSanityTests` — LayerNorm mean/std, dx, dγ/dβ | 3 | ✅ passing |
-| `GradientSanityTests` — RoPE, CrossEntropy | 2 | ⏸ skipped (gates) |
+| `GradientSanityTests` — CrossEntropy known loss, probs sum-to-one, grad check | 3 | ✅ passing |
+| `GradientSanityTests` — RoPE | 1 | ⏸ skipped (gate) |
 | `TransformerSmokeTests` — output shape, no NaN/Inf | 2 | ⏸ skipped (gates) |
 
-**Total: 14 passing · 4 skipped · 0 failing**
+**Total: 17 passing · 3 skipped · 0 failing**
 
 Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries the name of the op that must be implemented first. Remove the `Skip` attribute once the op is done.
 
@@ -162,6 +163,10 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 - **`Forward(x)`** — numerically stable (max subtraction), works on any rank, applies along last dim ✅
 - **`Backward(dOut, probs)`** — Jacobian-vector product: `dx_i = p_i · (dOut_i − dot(p, dOut))` ✅ verified by 1D + 2D gradient tests
 
+#### `CrossEntropyOp` — `src/ReasonCs.Core/Autograd/Ops/CrossEntropyOp.cs`
+- **`Forward(logits, targets)`** — fused numerically-stable softmax + NLL loss, averaged over the batch ✅
+- **`Backward(probs, targets)`** — `dLogits[b,i] = (p[b,i] − 1{i==t}) / B` ✅ verified by gradient test
+
 #### `LayerNormOp` — `src/ReasonCs.Core/Autograd/Ops/LayerNormOp.cs`
 - **`Forward(x, γ, β)`** — normalises along last dim, applies affine transform; returns cached `mean` + `rstd` ✅
 - **`Backward(dOut, x, γ, mean, rstd)`** — three gradients:
@@ -184,7 +189,7 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 |---|---|---|
 | `SoftmaxOp` | `Autograd/Ops/SoftmaxOp.cs` | ✅ done |
 | `LayerNormOp` | `Autograd/Ops/LayerNormOp.cs` | ✅ done |
-| `CrossEntropyOp` | `Autograd/Ops/CrossEntropyOp.cs` | 🔲 TODO |
+| `CrossEntropyOp` | `Autograd/Ops/CrossEntropyOp.cs` | ✅ done |
 | `RoPEOp` | `Autograd/Ops/RoPEOp.cs` | 🔲 TODO |
 | `EmbeddingOp` | `Autograd/Ops/EmbeddingOp.cs` | 🔲 TODO |
 | `Attention` | `Transformer/Attention.cs` | 🔲 TODO |
@@ -203,8 +208,7 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 
 ### 🔜 What's Next (ordered by plan)
 
-1. **`CrossEntropyOp`** — fused log-softmax + backward (`p - 1_target`), remove skip
-4. **`RoPEOp`** — forward + backward (⚠ verify against finite-diff — this is the hard one), remove skip
+1. **`RoPEOp`** — forward + backward (⚠ verify against finite-diff — this is the hard one), remove skip
 5. **`EmbeddingOp`** — lookup + scatter-add gradient
 6. **`Attention.Forward` + `Backward`** — wire all ops; smoke tests pass
 7. **`MLP.Forward` + `Backward`** — SwiGLU
