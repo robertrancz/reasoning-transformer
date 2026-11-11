@@ -135,8 +135,9 @@ dotnet test ReasonCs.slnx
 | `GradientSanityTests` — Embedding forward gather, backward scatter-add, grad check | 3 | ✅ passing |
 | `TransformerSmokeTests` — output shape, no NaN/Inf (forward) | 2 | ✅ passing |
 | `TransformerSmokeTests` — backward no NaN/Inf, gradients non-zero, loss decreases, greedy decode | 4 | ✅ passing |
+| `SyntheticDatasetTests` — generate count/steps/answer/format/range/determinism, split, tokenizer, eval pipeline | 12 | ✅ passing |
 
-**Total: 30 passing · 0 skipped · 0 failing**
+**Total: 42 passing · 0 skipped · 0 failing**
 
 ---
 
@@ -225,13 +226,25 @@ dotnet test ReasonCs.slnx
 - Tree node with `Tokens`, `Parent`, `Children`, `Visits`, `TotalValue`, `PriorScore` ✅
 - `Q` property (mean value), `UCB(explorationC)` — Upper Confidence Bound ✅
 
-#### Scaffolding (stubs — full signatures, PyTorch annotations, math in XML doc comments)
+#### `SyntheticDataset` — `src/ReasonCs.Core/Data/SyntheticDataset.cs`
+- **`Generate(count, minSteps, maxSteps, seed)`** — 2/3-step chained arithmetic: `"A=2 B=A+1 C=B*3 C=?"` → `"9"` ✅
+  - Rejection-sampling keeps all values in [0, 99]; `*` operand ≤ 5
+  - `Problem.FullText = Prompt + Answer` — training sequence
+  - `Problem.Steps/StepCorrect` — step-level labels for PRM (all `true` on generated data)
+- **`TrainTestSplit(problems, testRatio, seed)`** — Fisher-Yates shuffle + index split ✅
+
+#### `Evaluator` — `src/ReasonCs.Core/Inference/Evaluator.cs`
+- **`RunGreedy(model, tokenizer, testSet, maxNewTokens=4)`** — correct if decoded output `.StartsWith(answer)` ✅
+- Returns `EvalResult(Correct, Total, Accuracy)` ✅
+
+#### `Program.cs` — `src/ReasonCs.Runner/Program.cs`
+- Full pipeline: `Generate(5000)` → `TrainTestSplit` → `Tokenizer` → `TransformerModel` (134 k params) → `TrainingLoop(2000 steps)` → `Evaluator` ✅
+- Observed loss curve: 2.92 → 0.91 → 0.73 (steps 0/200/400) — model learns
+
+#### Stubs remaining
 
 | Module | File | Status |
 |---|---|---|
-| `Tokenizer` | `Data/Tokenizer.cs` | ✅ done (char-level) |
-| `SyntheticDataset` | `Data/SyntheticDataset.cs` | 🔲 TODO |
-| `Evaluator` | `Inference/Evaluator.cs` | 🔲 TODO |
 | `RewardModel` | `Reasoning/RewardModel.cs` | 🔲 TODO |
 | `MctsSearch` | `Reasoning/MctsSearch.cs` | 🔲 TODO |
 
@@ -239,10 +252,9 @@ dotnet test ReasonCs.slnx
 
 ### 🔜 What's Next (ordered by plan)
 
-1. **`SyntheticDataset.Generate`** — chained multi-step arithmetic problems (A=2, B=A+1, C=B×3, C=?)
-2. **Train & eval** — fit on synthetic data, measure greedy baseline accuracy on held-out test set
-3. **`RewardModel`** — ORM scoring head (final-answer correctness), then extend to PRM (step-level)
-4. **`MctsSearch`** — full MCTS loop over reasoning steps; compare against greedy baseline
+1. **Record greedy baseline** — run `dotnet run` to completion; note final accuracy on 500 held-out problems
+2. **`RewardModel`** — ORM linear scoring head (final-answer correctness), then extend to PRM (step-level)
+3. **`MctsSearch`** — MCTS over reasoning steps; compare against greedy baseline
 
 ---
 

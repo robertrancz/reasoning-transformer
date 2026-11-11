@@ -23,11 +23,11 @@ todos:
     content: Define what a "reasoning step" is (e.g., a decoded sequence of 20–50 tokens), the branching factor for MCTS (top-k=4–8 candidates per step), and the overall search budget before building MCTS or PRM
     status: pending
   - id: train-base-model
-    content: Generate a synthetic multi-step logic dataset (requiring at least 2–3 chained reasoning steps, e.g. A=2, B=A+1, C=B*3, C=?) and train the base model; hold out a test set for evaluation
-    status: pending
+    content: "SyntheticDataset: 5000 chained-arithmetic problems (A=2 B=A+1 C=B*3 C=?), 90/10 split ✅. Tokenizer: 19-char vocab ✅. Model: D=64, H=4, L=2 → 134k params. Training in progress: loss 2.92→0.91→0.73 at steps 0/200/400"
+    status: in-progress
   - id: eval-baseline
-    content: Evaluate the trained base model on the held-out test set using greedy decoding; record accuracy as the baseline to compare against MCTS later
-    status: pending
+    content: Evaluator.RunGreedy implemented ✅. Wired into Program.cs — will print greedy accuracy on 500 held-out problems once training completes
+    status: in-progress
   - id: reward-model
     content: Implement an Outcome Reward Model (ORM) first (simpler — scores final answers only), then extend to a Process Reward Model (PRM) that scores intermediate steps using programmatically derived step-level labels from the synthetic dataset
     status: pending

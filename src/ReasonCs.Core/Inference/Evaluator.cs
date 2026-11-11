@@ -23,18 +23,58 @@ namespace ReasonCs.Core.Inference;
 ///   torch.no_grad()    — disables gradient tracking during inference to save memory.
 ///                        We don't track gradients at all during eval, so this is implicit.
 ///   logits.argmax(-1)  — greedy decoding: always pick the most probable next token.
+///
+/// Accuracy definition (used here):
+///   A prediction is CORRECT if the first len(expected_answer) decoded characters
+///   exactly match the expected answer string.  Any trailing generated tokens are
+///   ignored.  This mirrors how real evaluation pipelines check final answers.
 /// </summary>
 public sealed class Evaluator
 {
-    public record EvalResult(int Correct, int Total, float Accuracy);
+    /// <summary>
+    /// Result of one evaluation run.
+    /// Accuracy = Correct / Total  ∈ [0, 1].
+    /// </summary>
+    public record EvalResult(int Correct, int Total, float Accuracy)
+    {
+        public override string ToString() =>
+            $"{Correct}/{Total} = {Accuracy:P1}";
+    }
 
+    /// <summary>
+    /// Run greedy-decoding accuracy on the given test problems.
+    ///
+    /// For each problem the model is given the prompt (everything up to and
+    /// including "?") and asked to generate up to <paramref name="maxNewTokens"/>
+    /// tokens.  A prediction is counted correct if its first
+    /// <c>problem.Answer.Length</c> decoded characters equal <c>problem.Answer</c>.
+    /// </summary>
     public static EvalResult RunGreedy(
         TransformerModel model,
         Tokenizer tokenizer,
         IEnumerable<SyntheticDataset.Problem> testSet,
-        int maxNewTokens = 16)
+        int maxNewTokens = 4)
     {
-        // TODO: implement greedy evaluation loop
-        throw new NotImplementedException();
+        int correct = 0, total = 0;
+
+        foreach (var problem in testSet)
+        {
+            var promptTokens = tokenizer.Encode(problem.Prompt);
+
+            // Greedy-decode up to maxNewTokens beyond the prompt
+            var allTokens  = model.GreedyDecode(promptTokens, maxNewTokens);
+            var newTokens  = allTokens[promptTokens.Length..];
+            var decoded    = tokenizer.Decode(newTokens);
+
+            // A prediction is correct if it starts with the expected answer
+            // (model may generate extra tokens after the answer digits)
+            if (decoded.StartsWith(problem.Answer, StringComparison.Ordinal))
+                correct++;
+
+            total++;
+        }
+
+        float accuracy = total == 0 ? 0f : (float)correct / total;
+        return new EvalResult(correct, total, accuracy);
     }
 }
