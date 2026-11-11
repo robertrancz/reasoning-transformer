@@ -183,6 +183,21 @@ public sealed class TransformerModel
     }
 
     /// <summary>
+    /// Compute the global L2 norm of all gradient tensors.
+    /// Useful for diagnosing exploding / vanishing gradients.
+    /// PyTorch equivalent: torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+    /// (we compute but do not clip here)
+    /// </summary>
+    public float GradNorm()
+    {
+        float sumSq = 0f;
+        foreach (var (_, grad) in GetParamGrads())
+            foreach (var v in grad.Data)
+                sumSq += v * v;
+        return MathF.Sqrt(sumSq);
+    }
+
+    /// <summary>
     /// Zero all gradient accumulators before starting a new backward pass.
     /// PyTorch equivalent: optimizer.zero_grad()
     /// </summary>

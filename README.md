@@ -94,6 +94,8 @@ reason.cs/
 │   │   ├── Data/
 │   │   │   ├── Tokenizer.cs        # Character-level tokenizer
 │   │   │   └── SyntheticDataset.cs # Chained multi-step arithmetic problems
+│   │   ├── Diagnostics/
+│   │   │   └── RunLogger.cs        # File + console logger (STEP/EVAL/PRED lines)
 │   │   ├── Inference/
 │   │   │   └── Evaluator.cs        # Greedy-decoding accuracy (baseline)
 │   │   └── Reasoning/
@@ -237,9 +239,19 @@ dotnet test ReasonCs.slnx
 - **`RunGreedy(model, tokenizer, testSet, maxNewTokens=4)`** — correct if decoded output `.StartsWith(answer)` ✅
 - Returns `EvalResult(Correct, Total, Accuracy)` ✅
 
+#### `RunLogger` — `src/ReasonCs.Core/Diagnostics/RunLogger.cs`
+- Writes every event to **both console and a timestamped log file** under `logs/` ✅
+- `Info(msg)` / `Kv(key, value)` — general metadata and config key-value pairs
+- `Step(step, loss, gradNorm, ms)` — structured `STEP` line per training step
+- `Eval(correct, total, accuracy)` — structured `EVAL` summary line
+- `Prediction(prompt, expected, got, ok)` — per-prediction `PRED` line (file only — keeps console clean)
+- `RunLogger.Create(logDir)` — creates `logs/run_YYYYMMDD_HHmmss.log`; `AutoFlush = true` for live `tail -f`
+- `TransformerModel.GradNorm()` — global L2 norm across all gradient tensors; logged each step ✅
+
 #### `Program.cs` — `src/ReasonCs.Runner/Program.cs`
 - Full pipeline: `Generate(5000)` → `TrainTestSplit` → `Tokenizer` → `TransformerModel` (134 k params) → `TrainingLoop(2000 steps)` → `Evaluator` ✅
-- Observed loss curve: 2.92 → 0.91 → 0.73 (steps 0/200/400) — model learns
+- Vocab: 19 chars, 134 144 parameters (D=64, H=4, L=2, MLP=256)
+- Observed loss curve: 2.92 → 0.91 → 0.73 (steps 0/200/400, grad_norm 3.46 → 2.77 → 1.31)
 
 #### Stubs remaining
 
@@ -299,6 +311,7 @@ Every handcrafted implementation carries a full `/// PyTorch equivalent:` sectio
 | `RewardModel` | Custom `nn.Module` + `nn.Linear` head | ORM first → extend to PRM |
 | `MctsNode` | Plain dataclass (no PyTorch equivalent) | Pure search data structure |
 | `MctsSearch` | No PyTorch equivalent | Pure search algorithm; LLM used only in Expand |
+| `RunLogger` | `logging` / TensorBoard `SummaryWriter` | File + console; STEP/EVAL/PRED structured lines; no external deps |
 
 ---
 

@@ -1,11 +1,13 @@
+using System.Diagnostics;
 using ReasonCs.Core.Autograd.Ops;
+using ReasonCs.Core.Diagnostics;
 using ReasonCs.Core.Transformer;
 
 namespace ReasonCs.Core.Training;
 
 /// <summary>
 /// Basic training loop: forward → loss → backward → optimizer step.
-/// Logs loss to console every <see cref="LogEvery"/> steps.
+/// Logs loss (and optionally grad norm + step timing) every <see cref="LogEvery"/> steps.
 ///
 /// PyTorch equivalent:
 ///   for step, (tokens, targets) in enumerate(dataloader):
@@ -32,20 +34,28 @@ public sealed class TrainingLoop
 
     /// <summary>
     /// Run the training loop for up to <paramref name="maxSteps"/> batches.
+    ///
+    /// When <paramref name="logger"/> is provided every logged step also writes
+    /// loss, gradient norm, and ms/step to the log file.
+    ///
     /// Returns the loss at the final logged step (useful for unit tests).
     /// </summary>
     public float Train(
         TransformerModel model,
         AdamW optimizer,
         IEnumerable<(int[] tokens, int[] targets)> batches,
-        int maxSteps)
+        int maxSteps,
+        RunLogger? logger = null)
     {
         float lastLoss = float.NaN;
-        int step = 0;
+        int   step     = 0;
+        var   sw       = new Stopwatch();
 
         foreach (var (tokens, targets) in batches)
         {
             if (step >= maxSteps) break;
+
+            sw.Restart();
 
             // ── Forward ───────────────────────────────────────────────────────
             var logits = model.Forward(tokens);              // [S, VocabSize]
@@ -62,9 +72,19 @@ public sealed class TrainingLoop
             // ── Optimizer step ────────────────────────────────────────────────
             optimizer.Step(model.GetParamGrads());
 
+            sw.Stop();
+
             // ── Logging ───────────────────────────────────────────────────────
             if (step % LogEvery == 0)
-                Console.WriteLine($"step {step,6}: loss {loss:F4}");
+            {
+                float gradNorm   = model.GradNorm();
+                float msPerStep  = sw.ElapsedMilliseconds;
+
+                if (logger is not null)
+                    logger.Step(step, loss, gradNorm, msPerStep);
+                else
+                    Console.WriteLine($"step {step,6}: loss {loss:F4}");
+            }
 
             step++;
         }

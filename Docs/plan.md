@@ -23,10 +23,10 @@ todos:
     content: Define what a "reasoning step" is (e.g., a decoded sequence of 20–50 tokens), the branching factor for MCTS (top-k=4–8 candidates per step), and the overall search budget before building MCTS or PRM
     status: pending
   - id: train-base-model
-    content: "SyntheticDataset: 5000 chained-arithmetic problems (A=2 B=A+1 C=B*3 C=?), 90/10 split ✅. Tokenizer: 19-char vocab ✅. Model: D=64, H=4, L=2 → 134k params. Training in progress: loss 2.92→0.91→0.73 at steps 0/200/400"
+    content: "SyntheticDataset ✅, Tokenizer ✅ (19-char vocab), Model (D=64,H=4,L=2 → 134k params) ✅, TrainingLoop wired ✅. RunLogger writes timestamped STEP/EVAL/PRED lines to logs/run_*.log ✅. Live loss: 2.92→0.91→0.73, grad_norm: 3.46→2.77→1.31 (steps 0/200/400)"
     status: in-progress
   - id: eval-baseline
-    content: Evaluator.RunGreedy implemented ✅. Wired into Program.cs — will print greedy accuracy on 500 held-out problems once training completes
+    content: Evaluator.RunGreedy implemented ✅, per-prediction PRED lines logged to file. Final greedy accuracy on 500 held-out problems will be recorded once training run completes.
     status: in-progress
   - id: reward-model
     content: Implement an Outcome Reward Model (ORM) first (simpler — scores final answers only), then extend to a Process Reward Model (PRM) that scores intermediate steps using programmatically derived step-level labels from the synthetic dataset

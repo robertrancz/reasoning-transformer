@@ -1,4 +1,5 @@
 using ReasonCs.Core.Data;
+using ReasonCs.Core.Diagnostics;
 using ReasonCs.Core.Transformer;
 
 namespace ReasonCs.Core.Inference;
@@ -48,12 +49,17 @@ public sealed class Evaluator
     /// including "?") and asked to generate up to <paramref name="maxNewTokens"/>
     /// tokens.  A prediction is counted correct if its first
     /// <c>problem.Answer.Length</c> decoded characters equal <c>problem.Answer</c>.
+    ///
+    /// When <paramref name="logger"/> is provided every individual prediction is
+    /// written to the log file (file-only — too verbose for the console).
+    /// The aggregate result is always logged to both console and file.
     /// </summary>
     public static EvalResult RunGreedy(
         TransformerModel model,
         Tokenizer tokenizer,
         IEnumerable<SyntheticDataset.Problem> testSet,
-        int maxNewTokens = 4)
+        int maxNewTokens = 4,
+        RunLogger? logger = null)
     {
         int correct = 0, total = 0;
 
@@ -62,19 +68,26 @@ public sealed class Evaluator
             var promptTokens = tokenizer.Encode(problem.Prompt);
 
             // Greedy-decode up to maxNewTokens beyond the prompt
-            var allTokens  = model.GreedyDecode(promptTokens, maxNewTokens);
-            var newTokens  = allTokens[promptTokens.Length..];
-            var decoded    = tokenizer.Decode(newTokens);
+            var allTokens = model.GreedyDecode(promptTokens, maxNewTokens);
+            var newTokens = allTokens[promptTokens.Length..];
+            var decoded   = tokenizer.Decode(newTokens);
 
-            // A prediction is correct if it starts with the expected answer
-            // (model may generate extra tokens after the answer digits)
-            if (decoded.StartsWith(problem.Answer, StringComparison.Ordinal))
-                correct++;
-
+            // Correct if decoded output starts with the expected answer
+            bool isCorrect = decoded.StartsWith(problem.Answer, StringComparison.Ordinal);
+            if (isCorrect) correct++;
             total++;
+
+            // Per-prediction log line (file only — 500 lines is noisy on console)
+            logger?.Prediction(problem.Prompt, problem.Answer,
+                               decoded[..Math.Min(decoded.Length, problem.Answer.Length + 2)],
+                               isCorrect);
         }
 
         float accuracy = total == 0 ? 0f : (float)correct / total;
-        return new EvalResult(correct, total, accuracy);
+        var   result   = new EvalResult(correct, total, accuracy);
+
+        logger?.Eval(correct, total, accuracy);
+
+        return result;
     }
 }

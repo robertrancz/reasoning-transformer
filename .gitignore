@@ -86,6 +86,9 @@ csx/
 # Windows Store app package directory
 AppPackages/
 
+# Training run logs (generated output)
+logs/
+
 # Others
 sql/
 *.Cache
