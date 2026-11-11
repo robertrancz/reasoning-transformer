@@ -129,10 +129,11 @@ dotnet test ReasonCs.slnx
 | `TensorOpsTests` — MatMul (2×2, identity, shape mismatch), Scale | 4 | ✅ passing |
 | `GradientSanityTests` — MatMul dA, dB, non-uniform loss | 3 | ✅ passing |
 | `GradientSanityTests` — Softmax uniform, sums-to-one, grad 1D, grad 2D | 4 | ✅ passing |
-| `GradientSanityTests` — LayerNorm (×2), RoPE, CrossEntropy | 4 | ⏸ skipped (gates) |
+| `GradientSanityTests` — LayerNorm mean/std, dx, dγ/dβ | 3 | ✅ passing |
+| `GradientSanityTests` — RoPE, CrossEntropy | 2 | ⏸ skipped (gates) |
 | `TransformerSmokeTests` — output shape, no NaN/Inf | 2 | ⏸ skipped (gates) |
 
-**Total: 11 passing · 6 skipped · 0 failing**
+**Total: 14 passing · 4 skipped · 0 failing**
 
 Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries the name of the op that must be implemented first. Remove the `Skip` attribute once the op is done.
 
@@ -161,9 +162,17 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 - **`Forward(x)`** — numerically stable (max subtraction), works on any rank, applies along last dim ✅
 - **`Backward(dOut, probs)`** — Jacobian-vector product: `dx_i = p_i · (dOut_i − dot(p, dOut))` ✅ verified by 1D + 2D gradient tests
 
+#### `LayerNormOp` — `src/ReasonCs.Core/Autograd/Ops/LayerNormOp.cs`
+- **`Forward(x, γ, β)`** — normalises along last dim, applies affine transform; returns cached `mean` + `rstd` ✅
+- **`Backward(dOut, x, γ, mean, rstd)`** — three gradients:
+  - `dGamma[i] = Σ_b dOut[b,i]·x̂[b,i]`
+  - `dBeta[i]  = Σ_b dOut[b,i]`
+  - `dx[b,i]   = rstd·(dx̂ − mean(dx̂) − x̂·mean(dx̂·x̂))` ✅ verified by 2 gradient tests
+
 #### `NumericalGradientHelper` — `tests/ReasonCs.Tests/Autograd/`
-- Finite-difference gradient checker with configurable `eps` and `tolerance` ✅
-- Calibrated for float32: `eps=5e-4`, `tolerance=0.01` (1%) with documented rationale
+- Finite-difference gradient checker with configurable `eps`, relative *and* absolute tolerance ✅
+- Calibrated for float32: `eps=5e-4`, `rtol=0.01` (1%), `atol=1e-3` (for near-zero gradients) with documented rationale
+- Mixed `atol + rtol` criterion mirrors PyTorch `torch.autograd.gradcheck` — prevents false failures when both analytical and numerical are correctly zero but float32 rounding introduces tiny noise
 
 #### `MctsNode` — `src/ReasonCs.Core/Reasoning/MctsNode.cs`
 - Tree node with `Tokens`, `Parent`, `Children`, `Visits`, `TotalValue`, `PriorScore` ✅
@@ -174,7 +183,7 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 | Module | File | Status |
 |---|---|---|
 | `SoftmaxOp` | `Autograd/Ops/SoftmaxOp.cs` | ✅ done |
-| `LayerNormOp` | `Autograd/Ops/LayerNormOp.cs` | 🔲 TODO |
+| `LayerNormOp` | `Autograd/Ops/LayerNormOp.cs` | ✅ done |
 | `CrossEntropyOp` | `Autograd/Ops/CrossEntropyOp.cs` | 🔲 TODO |
 | `RoPEOp` | `Autograd/Ops/RoPEOp.cs` | 🔲 TODO |
 | `EmbeddingOp` | `Autograd/Ops/EmbeddingOp.cs` | 🔲 TODO |
@@ -194,8 +203,7 @@ Skipped tests are **intentional gates** — each `[Fact(Skip = "...")]` carries 
 
 ### 🔜 What's Next (ordered by plan)
 
-1. **`LayerNormOp`** — forward + backward (dx, dγ, dβ), remove 2 skips
-3. **`CrossEntropyOp`** — fused log-softmax + backward (`p - 1_target`), remove skip
+1. **`CrossEntropyOp`** — fused log-softmax + backward (`p - 1_target`), remove skip
 4. **`RoPEOp`** — forward + backward (⚠ verify against finite-diff — this is the hard one), remove skip
 5. **`EmbeddingOp`** — lookup + scatter-add gradient
 6. **`Attention.Forward` + `Backward`** — wire all ops; smoke tests pass

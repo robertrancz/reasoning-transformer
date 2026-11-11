@@ -17,10 +17,17 @@ public static class NumericalGradientHelper
     // We use 5e-4 — a safe value that minimises both truncation error (O(eps²))
     // and catastrophic cancellation in (fPlus - fMinus) when |Loss| is large.
     //
-    // Tolerance 0.01 (1%) is the standard threshold for float32 gradient checks
-    // (PyTorch uses the same default in torch.autograd.gradcheck for float32).
-    public const float Epsilon   = 5e-4f;
-    public const float Tolerance = 0.01f;
+    // Tolerance 0.01 (1%) is the standard relative threshold for float32 gradient
+    // checks (same as PyTorch torch.autograd.gradcheck for float32).
+    //
+    // AbsTolerance handles near-zero gradients where both analytical and numerical
+    // are essentially zero but their ratio is ill-defined.  This mirrors PyTorch's
+    // atol=1e-5 / rtol=1e-3 mixed criterion: pass if
+    //   |num − anal| ≤ atol  OR  relError ≤ rtol
+    // We use a more generous atol=1e-3 for float32 (1 ULP at scale ~10³).
+    public const float Epsilon      = 5e-4f;
+    public const float Tolerance    = 0.01f;     // relative tolerance (1%)
+    public const float AbsTolerance = 1e-3f;     // absolute tolerance for near-zero grads
 
     /// <summary>
     /// Check that the analytical gradient of <paramref name="analyticalGrad"/>
@@ -47,13 +54,19 @@ public static class NumericalGradientHelper
 
             float numerical   = (fPlus - fMinus) / (2f * eps);
             float analytical  = analyticalGrad.Data[i];
-            float relError    = MathF.Abs(numerical - analytical)
+            float absError    = MathF.Abs(numerical - analytical);
+            float relError    = absError
                               / (MathF.Abs(numerical) + MathF.Abs(analytical) + 1e-8f);
 
-            if (relError > tolerance)
+            // Pass if either the absolute error is tiny (both values are near zero)
+            // OR the relative error is within tolerance. Mirrors PyTorch's mixed
+            // atol + rtol criterion used in torch.autograd.gradcheck.
+            bool pass = absError <= AbsTolerance || relError <= tolerance;
+            if (!pass)
                 throw new Exception(
                     $"Gradient check FAILED at index {i}: " +
-                    $"numerical={numerical:F6}, analytical={analytical:F6}, relError={relError:F6}");
+                    $"numerical={numerical:F6}, analytical={analytical:F6}, " +
+                    $"absError={absError:F6}, relError={relError:F6}");
         }
     }
 }

@@ -144,18 +144,78 @@ public class GradientSanityTests
             forward: () => TensorOps.Sum(TensorOps.Multiply(SoftmaxOp.Forward(x), w)));
     }
 
-    [Fact(Skip = "Implement LayerNormOp first")]
-    public void LayerNorm_GradientCheck_dx()
+    // =========================================================================
+    // LayerNormOp
+    // =========================================================================
+
+    [Fact]
+    public void LayerNorm_OutputHasMeanZeroStdOne_WithIdentityAffine()
     {
-        // TODO: [4, 16] input, check dx
-        throw new NotImplementedException();
+        // With γ=1, β=0 the output should be the normalised input: mean≈0, std≈1.
+        var x     = new Tensor([3, 8]);
+        var gamma = new Tensor([8], Enumerable.Repeat(1f, 8).ToArray());
+        var beta  = new Tensor([8], Enumerable.Repeat(0f, 8).ToArray());
+        TensorOps.RandomNormal(x, seed: 5);
+
+        var (y, _, _) = LayerNormOp.Forward(x, gamma, beta);
+
+        for (int row = 0; row < 3; row++)
+        {
+            float rowMean = 0f, rowVar = 0f;
+            for (int col = 0; col < 8; col++) rowMean += y[row, col];
+            rowMean /= 8;
+            for (int col = 0; col < 8; col++) { float d = y[row, col] - rowMean; rowVar += d * d; }
+            rowVar /= 8;
+
+            Assert.Equal(0f,  rowMean,            precision: 4);
+            Assert.Equal(1f,  MathF.Sqrt(rowVar), precision: 4);
+        }
     }
 
-    [Fact(Skip = "Implement LayerNormOp first")]
+    [Fact]
+    public void LayerNorm_GradientCheck_dx()
+    {
+        // Loss = sum(LayerNorm(x, γ, β) * w)  →  dOut = w
+        // Avoid C# `_` scoping edge-cases by using explicit variable names.
+        var x     = new Tensor([2, 4], [ 0.5f, -0.3f,  0.1f,  0.8f,
+                                         -0.2f,  0.4f, -0.1f,  0.3f]);
+        var gamma = new Tensor([4],    [ 1.0f,  0.8f,  1.2f,  0.9f]);
+        var beta  = new Tensor([4],    [ 0.0f, -0.1f,  0.1f,  0.0f]);
+        var w     = new Tensor([2, 4], [ 0.1f, -0.2f,  0.1f,  0.0f,
+                                        -0.1f,  0.2f, -0.1f,  0.1f]);
+
+        var fwdResult = LayerNormOp.Forward(x, gamma, beta);
+        var bwdResult = LayerNormOp.Backward(w, x, gamma, fwdResult.mean, fwdResult.rstd);
+
+        NumericalGradientHelper.Check(x, bwdResult.dx, forward: () =>
+        {
+            var fwd = LayerNormOp.Forward(x, gamma, beta);
+            return TensorOps.Sum(TensorOps.Multiply(fwd.y, w));
+        });
+    }
+
+    [Fact]
     public void LayerNorm_GradientCheck_dGamma_dBeta()
     {
-        // TODO: check dγ, dβ
-        throw new NotImplementedException();
+        // Same setup — check gradients w.r.t. the affine parameters γ and β.
+        var x     = new Tensor([2, 4], [ 0.5f, -0.3f,  0.1f,  0.8f,
+                                         -0.2f,  0.4f, -0.1f,  0.3f]);
+        var gamma = new Tensor([4],    [ 1.0f,  0.8f,  1.2f,  0.9f]);
+        var beta  = new Tensor([4],    [ 0.0f, -0.1f,  0.1f,  0.0f]);
+        var w     = new Tensor([2, 4], [ 0.1f, -0.2f,  0.1f,  0.0f,
+                                        -0.1f,  0.2f, -0.1f,  0.1f]);
+
+        var (yFwd, mean, rstd)     = LayerNormOp.Forward(x, gamma, beta);
+        var (dxBwd, dGamma, dBeta) = LayerNormOp.Backward(w, x, gamma, mean, rstd);
+
+        float Loss()
+        {
+            var (y, m, r) = LayerNormOp.Forward(x, gamma, beta);
+            return TensorOps.Sum(TensorOps.Multiply(y, w));
+        }
+
+        NumericalGradientHelper.Check(gamma, dGamma, Loss);
+        NumericalGradientHelper.Check(beta,  dBeta,  Loss);
     }
 
     /// <summary>
