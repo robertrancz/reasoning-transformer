@@ -208,6 +208,32 @@ public sealed class TransformerModel
     }
 
     /// <summary>
+    /// Backbone-only forward pass — returns the final LayerNorm hidden states
+    /// [seqLen, EmbedDim] <em>without</em> applying the LM head.
+    ///
+    /// Used by <see cref="ReasonCs.Core.Reasoning.RewardModel"/> to extract
+    /// per-token contextual representations from the frozen backbone.
+    ///
+    /// Note: updates the TransformerBlock internal caches (those from the most
+    /// recent Forward() call are overwritten).  This is intentional — the
+    /// backbone is frozen during reward-model training so its own Backward()
+    /// will not be called again.
+    ///
+    /// PyTorch equivalent:
+    ///   with torch.no_grad():
+    ///       hidden = backbone(tokens)   # [S, D] — before lm_head
+    /// </summary>
+    public Tensor ForwardToHidden(int[] tokens)
+    {
+        int seqLen = tokens.Length;
+        var x = EmbeddingOp.Forward(TokenEmbedding, tokens);
+        foreach (var block in Blocks)
+            x = block.Forward(x, seqLen);
+        var (xNorm, _, _) = LayerNormOp.Forward(x, FinalGamma, FinalBeta);
+        return xNorm;   // [seqLen, EmbedDim]
+    }
+
+    /// <summary>
     /// Greedy decoding — appends <paramref name="maxNewTokens"/> tokens to the prompt,
     /// choosing the argmax logit at each step.
     /// </summary>

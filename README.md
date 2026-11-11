@@ -139,8 +139,9 @@ dotnet test ReasonCs.slnx
 | `TransformerSmokeTests` — output shape, no NaN/Inf (forward) | 2 | ✅ passing |
 | `TransformerSmokeTests` — backward no NaN/Inf, gradients non-zero, loss decreases, greedy decode | 4 | ✅ passing |
 | `SyntheticDatasetTests` — generate count/steps/answer/format/range/determinism, split, tokenizer, eval pipeline | 12 | ✅ passing |
+| `RewardModelTests` — score range, gradient non-zero, ZeroGrad, BCE loss, score↑ after pos training, score↓ after neg training, ranking accuracy > 55%, SampleWrongAnswer | 9 | ✅ passing |
 
-**Total: 46 passing · 0 skipped · 0 failing**
+**Total: 55 passing · 0 skipped · 0 failing**
 
 ---
 
@@ -257,21 +258,37 @@ dotnet test ReasonCs.slnx
 - **Greedy baseline: 46/500 = 9.2%** (random chance ≈ 5.3%; model beats random)
 - Common failure: model outputs `"10x"` for most answers — loss still converging at 2000 steps; more steps are now cheap
 
+#### `RewardModel` — `src/ReasonCs.Core/Reasoning/RewardModel.cs`
+- **Architecture** — linear scoring head `[EmbedDim, 1]` on top of a frozen backbone; `sigmoid(last_hidden @ ScoreHead)` → scalar ∈ (0,1) ✅
+- **`Score(tokens)`** — runs `backbone.ForwardToHidden(tokens)`, takes last token's post-LN repr, applies score head + sigmoid ✅
+- **`Backward(label)`** — backpropagates only through score head (backbone frozen); combined sigmoid+BCE gradient `dLogit = score − label` → accumulates `DScoreHead` ✅
+- **`GetParamGrads()` / `ZeroGrad()`** — yields just (ScoreHead, DScoreHead); backbone params excluded ✅
+- Only **64 trainable parameters** (EmbedDim=64 score head); backbone stays frozen
+
+#### `RewardTrainer` — `src/ReasonCs.Core/Training/RewardTrainer.cs`
+- **`TrainOrm(...)`** — balanced pos/neg curriculum (50/50 per step); negative = random wrong answer from [0,99]; AdamW on score head only ✅
+- **`EvalOrmRanking(...)`** — ranking accuracy: P(score(correct) > score(wrong)) ✅
+- **`SampleWrongAnswer(correct, rng)`** — public helper for tests; samples a wrong answer string ✅
+
+#### `ForwardToHidden` — added to `TransformerModel`
+- Runs Embedding→Blocks→FinalLN without applying the LM head; returns `[seqLen, EmbedDim]` ✅
+- Backbone caches are updated but backbone backward is never called during ORM training
+
 #### Stubs remaining
 
 | Module | File | Status |
 |---|---|---|
-| `RewardModel` | `Reasoning/RewardModel.cs` | 🔲 TODO |
 | `MctsSearch` | `Reasoning/MctsSearch.cs` | 🔲 TODO |
 
 ---
 
 ### 🔜 What's Next (ordered by plan)
 
-1. **`RewardModel`** — ORM linear scoring head that scores whether a final answer is correct; trained on the same synthetic data with binary labels
-2. **`MctsSearch`** — MCTS over reasoning steps, scored by ORM; compare against **9.2% greedy baseline**
+1. **`MctsSearch`** — MCTS over reasoning steps, scored by ORM; compare against **8.6–9.2% greedy baseline**
+   - Select (UCB1), Expand (top-k sampled steps), Evaluate (ORM score), Backpropagate
+   - Target: accuracy > greedy baseline to demonstrate Test-Time Compute works
 
-> *(Optional: train for more steps / larger config — now trivial at ~13 ms/step)*
+> *(Optional: more training steps / larger config — trivial at ~7 ms/step)*
 
 ---
 

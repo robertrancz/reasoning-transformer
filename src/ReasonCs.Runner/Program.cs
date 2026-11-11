@@ -1,31 +1,32 @@
 using ReasonCs.Core.Data;
 using ReasonCs.Core.Diagnostics;
 using ReasonCs.Core.Inference;
-using ReasonCs.Core.Transformer;
+using ReasonCs.Core.Reasoning;
 using ReasonCs.Core.Training;
+using ReasonCs.Core.Transformer;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  reason.cs — entry point
 // ─────────────────────────────────────────────────────────────────────────────
 //
-//  Stages (uncomment as each is implemented):
-//
-//  1. Tensor + Autograd tests      → run:  dotnet test
-//  2. Train base model             → done below
-//  3. Evaluate greedy baseline     → done below
-//  4. MCTS reasoning               → uncomment RunMcts()
+//  Pipeline stages:
+//    1. Train base LM                → TrainBaseModel()
+//    2. Greedy baseline eval         → Evaluator.RunGreedy()
+//    3. Train ORM reward model       → RewardTrainer.TrainOrm()
+//    4. ORM ranking eval             → RewardTrainer.EvalOrmRanking()
+//    5. MCTS reasoning               → RunMcts()  [TODO]
 //
 
 Console.WriteLine("reason.cs — From-Scratch Reasoning Transformer");
 Console.WriteLine("================================================");
 
-TrainBaseModel();
+RunPipeline();
 
-// RunMcts();   // TODO: uncomment once MCTS + RewardModel are implemented
+// RunMcts();   // TODO: uncomment once MctsSearch is implemented
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void TrainBaseModel()
+static void RunPipeline()
 {
     using var logger = RunLogger.Create(logDir: "logs");
 
@@ -46,9 +47,7 @@ static void TrainBaseModel()
     logger.Kv("Characters", $"[{string.Join("", Enumerable.Range(0, tokenizer.VocabSize)
                                                            .Select(i => tokenizer.Decode([i])))}]");
 
-    // ── 3. Create model ───────────────────────────────────────────────────────
-    // NOTE: Compact config so the demo completes in ~3-5 min on naive MatMul.
-    // Phase 2 will add AVX2 SIMD for 10-20× speed-up, enabling full config.
+    // ── 3. Create and train base language model ───────────────────────────────
     logger.Info("\n=== Model ===");
     var config = new TransformerConfig(
         VocabSize:    tokenizer.VocabSize,
@@ -69,20 +68,41 @@ static void TrainBaseModel()
     logger.Kv("Parameters",   $"{paramCount:N0}");
     logger.Kv("LearningRate", optimizer.LearningRate);
     logger.Kv("WeightDecay",  optimizer.WeightDecay);
-    logger.Info("(Phase 2: swap in AVX2 MatMul for 10-20× speed-up)");
 
-    // ── 4. Train ──────────────────────────────────────────────────────────────
-    logger.Info("\n=== Training (2 000 steps) ===");
+    logger.Info("\n=== Training base LM (2 000 steps) ===");
     var batches = MakeBatches(trainSet, tokenizer);
     var loop    = new TrainingLoop { LogEvery = 200 };
     loop.Train(model, optimizer, RepeatForever(batches), maxSteps: 2_000, logger: logger);
 
-    // ── 5. Evaluate greedy baseline ───────────────────────────────────────────
+    // ── 4. Greedy baseline ────────────────────────────────────────────────────
     logger.Info("\n=== Greedy baseline ===");
-    var result = Evaluator.RunGreedy(model, tokenizer, testSet,
-                                     maxNewTokens: 4, logger: logger);
-    logger.Info($"Accuracy: {result}");
-    logger.Info("\n(Run MCTS on top of this model to beat the greedy baseline.)");
+    var baselineResult = Evaluator.RunGreedy(model, tokenizer, testSet,
+                                             maxNewTokens: 4, logger: logger);
+    logger.Info($"Greedy accuracy: {baselineResult}");
+
+    // ── 5. Train ORM (Outcome Reward Model) ───────────────────────────────────
+    logger.Info("\n=== Reward Model (ORM) — training ===");
+    var orm          = new RewardModel(model, RewardModel.Mode.ORM);
+    var ormOptimizer = new AdamW(lr: 1e-3f, weightDecay: 0f);
+    long ormParams   = orm.GetParamGrads().Sum(pg => (long)pg.param.Size);
+
+    logger.Kv("ORM params",     $"{ormParams:N0}  (score head only — backbone frozen)");
+    logger.Kv("ORM lr",         ormOptimizer.LearningRate);
+    logger.Kv("ORM steps",      "1 000");
+
+    var ormResult = RewardTrainer.TrainOrm(
+        orm, ormOptimizer, tokenizer,
+        trainProblems: trainSet,
+        evalProblems:  testSet,
+        steps:    1_000,
+        logEvery: 100,
+        logger:   logger);
+
+    // ── 6. ORM ranking evaluation ─────────────────────────────────────────────
+    logger.Info("\n=== ORM ranking accuracy ===");
+    logger.Info($"ORM ranking accuracy (correct > wrong): {ormResult.FinalRankingAcc:P1}");
+    logger.Info("(Random baseline = 50%; perfect ORM = 100%)");
+    logger.Info("\n(Next: MctsSearch — use ORM scores to guide tree search and beat greedy baseline.)");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,13 +111,7 @@ static void TrainBaseModel()
 
 /// <summary>
 /// Convert training problems into (tokens, targets) pairs for the training loop.
-///
-/// Each problem becomes one sequence:
-///   full    = encode(Prompt + Answer)           e.g. [A,=,3, ,B,=,A,+,2, ,B,=,?,5]
-///   tokens  = full[..^1]   (drop last)
-///   targets = full[1..]    (drop first)
-///
-/// The model predicts the next character at every position.
+/// Each full sequence (prompt + answer) is shifted by one for next-token prediction.
 /// </summary>
 static IEnumerable<(int[] tokens, int[] targets)> MakeBatches(
     IEnumerable<SyntheticDataset.Problem> problems, Tokenizer tokenizer)

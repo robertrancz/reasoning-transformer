@@ -29,8 +29,8 @@ todos:
     content: "DONE ✅. Greedy baseline: 46/500 = 9.2% on held-out test set. Random baseline ≈ 5.3%. Model beats random but plateaus early — needs more steps or larger model (SIMD Phase 2 unlocks this). Logged to logs/run_20261111_141554.log."
     status: done
   - id: reward-model
-    content: Implement an Outcome Reward Model (ORM) first (simpler — scores final answers only), then extend to a Process Reward Model (PRM) that scores intermediate steps using programmatically derived step-level labels from the synthetic dataset
-    status: pending
+    content: "DONE ✅. ORM implemented: frozen backbone (ForwardToHidden) + linear score head [D,1] + sigmoid. BCE loss, combined sigmoid+BCE gradient (dLogit=score−label). Only 64 params trained. RewardTrainer.TrainOrm: balanced pos/neg curriculum, random wrong answers from [0,99]. ORM ranking accuracy: 376/500 = 75.2% (random=50%). 9 new tests. Pipeline: 19 sec end-to-end."
+    status: done
   - id: mcts-reasoning
     content: Build MCTS over reasoning *steps* (not individual tokens) — expand top-k sampled step-candidates per node, score with PRM/ORM, backpropagate value up the tree; compare final accuracy against the greedy baseline
     status: pending
