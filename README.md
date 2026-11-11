@@ -250,8 +250,10 @@ dotnet test ReasonCs.slnx
 
 #### `Program.cs` — `src/ReasonCs.Runner/Program.cs`
 - Full pipeline: `Generate(5000)` → `TrainTestSplit` → `Tokenizer` → `TransformerModel` (134 k params) → `TrainingLoop(2000 steps)` → `Evaluator` ✅
-- Vocab: 19 chars, 134 144 parameters (D=64, H=4, L=2, MLP=256)
-- Observed loss curve: 2.92 → 0.91 → 0.73 (steps 0/200/400, grad_norm 3.46 → 2.77 → 1.31)
+- Vocab: 19 chars, 134 144 parameters (D=64, H=4, L=2, MLP=256), 2000 steps, ~25 min on CPU
+- Loss curve: 2.92 → 0.91 → 0.73 → 0.66 → 0.62 → 0.58 (steps 0/200/400/1000/1400/1800)
+- **Greedy baseline: 46/500 = 9.2%** (random chance ≈ 5.3%; model is beating random)
+- Common failure: model outputs `"10x"` for most answers — needs more training or larger model; SIMD is the unlock
 
 #### Stubs remaining
 
@@ -264,9 +266,9 @@ dotnet test ReasonCs.slnx
 
 ### 🔜 What's Next (ordered by plan)
 
-1. **Record greedy baseline** — run `dotnet run` to completion; note final accuracy on 500 held-out problems
-2. **`RewardModel`** — ORM linear scoring head (final-answer correctness), then extend to PRM (step-level)
-3. **`MctsSearch`** — MCTS over reasoning steps; compare against greedy baseline
+1. **`RewardModel`** — ORM linear scoring head that scores whether a final answer is correct; trained on the same synthetic data with binary labels
+2. **`MctsSearch`** — MCTS over reasoning steps, scored by ORM; compare against **9.2% greedy baseline**
+3. *(Optional but high-leverage)* **SIMD MatMul (Phase 2)** — AVX2 fast-path would cut training time from ~25 min → ~2 min, enabling larger models and more training steps
 
 ---
 

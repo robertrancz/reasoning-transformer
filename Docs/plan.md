@@ -23,11 +23,11 @@ todos:
     content: Define what a "reasoning step" is (e.g., a decoded sequence of 20–50 tokens), the branching factor for MCTS (top-k=4–8 candidates per step), and the overall search budget before building MCTS or PRM
     status: pending
   - id: train-base-model
-    content: "SyntheticDataset ✅, Tokenizer ✅ (19-char vocab), Model (D=64,H=4,L=2 → 134k params) ✅, TrainingLoop wired ✅. RunLogger writes timestamped STEP/EVAL/PRED lines to logs/run_*.log ✅. Live loss: 2.92→0.91→0.73, grad_norm: 3.46→2.77→1.31 (steps 0/200/400)"
-    status: in-progress
+    content: "DONE ✅. 5000 problems, 19-char vocab, D=64/H=4/L=2/MLP=256 (134k params), 2000 steps (~25 min). Loss: 2.92→0.91→0.73→0.66→0.62→0.58. RunLogger writes to logs/run_*.log."
+    status: done
   - id: eval-baseline
-    content: Evaluator.RunGreedy implemented ✅, per-prediction PRED lines logged to file. Final greedy accuracy on 500 held-out problems will be recorded once training run completes.
-    status: in-progress
+    content: "DONE ✅. Greedy baseline: 46/500 = 9.2% on held-out test set. Random baseline ≈ 5.3%. Model beats random but plateaus early — needs more steps or larger model (SIMD Phase 2 unlocks this). Logged to logs/run_20261111_141554.log."
+    status: done
   - id: reward-model
     content: Implement an Outcome Reward Model (ORM) first (simpler — scores final answers only), then extend to a Process Reward Model (PRM) that scores intermediate steps using programmatically derived step-level labels from the synthetic dataset
     status: pending
