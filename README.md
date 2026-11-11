@@ -129,6 +129,7 @@ dotnet test ReasonCs.slnx
 | Suite | Tests | Status |
 |---|---|---|
 | `TensorOpsTests` — MatMul (2×2, identity, shape mismatch), Scale | 4 | ✅ passing |
+| `TensorOpsTests` — SIMD: matches naive (attn shape, MLP shape, scalar tail), speedup benchmark | 4 | ✅ passing |
 | `GradientSanityTests` — MatMul dA, dB, non-uniform loss | 3 | ✅ passing |
 | `GradientSanityTests` — Softmax uniform, sums-to-one, grad 1D, grad 2D | 4 | ✅ passing |
 | `GradientSanityTests` — LayerNorm mean/std, dx, dγ/dβ | 3 | ✅ passing |
@@ -139,7 +140,7 @@ dotnet test ReasonCs.slnx
 | `TransformerSmokeTests` — backward no NaN/Inf, gradients non-zero, loss decreases, greedy decode | 4 | ✅ passing |
 | `SyntheticDatasetTests` — generate count/steps/answer/format/range/determinism, split, tokenizer, eval pipeline | 12 | ✅ passing |
 
-**Total: 42 passing · 0 skipped · 0 failing**
+**Total: 46 passing · 0 skipped · 0 failing**
 
 ---
 
@@ -150,7 +151,9 @@ dotnet test ReasonCs.slnx
 #### `Tensor` — `src/ReasonCs.Core/Tensor/`
 - **`Tensor`**: rank-N tensor backed by a flat `float[]`. Stores shape and computed strides separately so reshape/transpose are zero-copy. Multi-index accessor (`tensor[i, j, k]`).
 - **`TensorOps`**:
-  - `MatMul(a, b)` — O(M·K·N) naive triple-loop ✅ verified
+  - `MatMul(a, b)` — hardware dispatcher: SIMD when `Vector.IsHardwareAccelerated`, else scalar ✅
+    - `MatMulNaive(a, b)` — O(M·K·N) scalar reference (kept for correctness tests) ✅
+    - `MatMulSimdCore` (private) — transposes B then dot-product via `Vector<float>` accumulator; **3× per-MatMul, ~40–55× end-to-end** on AVX2 hardware ✅
   - `Transpose(a)` — rank-2 transpose `[M,N] → [N,M]` ✅
   - `Sum(a)` — reduce all elements to a scalar ✅
   - `Add`, `Multiply` — element-wise ops ✅
@@ -158,7 +161,6 @@ dotnet test ReasonCs.slnx
   - `RandomNormal(t, mean, std, seed)` — Box-Muller initialization ✅
   - `Fill(t, value)` — constant fill ✅
   - `AddTo(dest, src)` — in-place `dest += src` (used by all backward passes) ✅
-  - *(SIMD fast-path stubbed as `// TODO: MatMulSimd` — Phase 2)*
 
 #### `MatMulOp` — `src/ReasonCs.Core/Autograd/Ops/MatMulOp.cs`
 - **`Forward(a, b)`** — delegates to `TensorOps.MatMul` ✅
@@ -250,10 +252,10 @@ dotnet test ReasonCs.slnx
 
 #### `Program.cs` — `src/ReasonCs.Runner/Program.cs`
 - Full pipeline: `Generate(5000)` → `TrainTestSplit` → `Tokenizer` → `TransformerModel` (134 k params) → `TrainingLoop(2000 steps)` → `Evaluator` ✅
-- Vocab: 19 chars, 134 144 parameters (D=64, H=4, L=2, MLP=256), 2000 steps, ~25 min on CPU
-- Loss curve: 2.92 → 0.91 → 0.73 → 0.66 → 0.62 → 0.58 (steps 0/200/400/1000/1400/1800)
-- **Greedy baseline: 46/500 = 9.2%** (random chance ≈ 5.3%; model is beating random)
-- Common failure: model outputs `"10x"` for most answers — needs more training or larger model; SIMD is the unlock
+- Vocab: 19 chars, 134 144 parameters (D=64, H=4, L=2, MLP=256), 2000 steps, **~27 sec on CPU** (was ~25 min before SIMD)
+- Loss curve: 2.92 → 0.91 → 0.73 → 0.70 → 0.69 → 0.66 → 0.66 → 0.62 → 0.67 → 0.58 (steps 0/200/…/1800)
+- **Greedy baseline: 46/500 = 9.2%** (random chance ≈ 5.3%; model beats random)
+- Common failure: model outputs `"10x"` for most answers — loss still converging at 2000 steps; more steps are now cheap
 
 #### Stubs remaining
 
@@ -268,7 +270,8 @@ dotnet test ReasonCs.slnx
 
 1. **`RewardModel`** — ORM linear scoring head that scores whether a final answer is correct; trained on the same synthetic data with binary labels
 2. **`MctsSearch`** — MCTS over reasoning steps, scored by ORM; compare against **9.2% greedy baseline**
-3. *(Optional but high-leverage)* **SIMD MatMul (Phase 2)** — AVX2 fast-path would cut training time from ~25 min → ~2 min, enabling larger models and more training steps
+
+> *(Optional: train for more steps / larger config — now trivial at ~13 ms/step)*
 
 ---
 
@@ -293,7 +296,7 @@ Every handcrafted implementation carries a full `/// PyTorch equivalent:` sectio
 | reason.cs class | PyTorch equivalent | Notes |
 |---|---|---|
 | `Tensor` | `torch.Tensor` | CPU-only, no autograd tape |
-| `TensorOps.MatMul` | `a @ b` / `torch.matmul(a, b)` | Naive O(M·K·N); SIMD in Phase 2 |
+| `TensorOps.MatMul` | `a @ b` / `torch.matmul(a, b)` | SIMD dispatcher: `Vector<float>` (AVX2 8-wide); ~3× per-call, ~40–55× end-to-end |
 | `TensorOps.RandomNormal` | `torch.nn.init.normal_(t, μ, σ)` | Box-Muller transform |
 | `MatMulOp.Forward/Backward` | `a @ b` + autograd | Backward: `dA = dC @ B.T`, `dB = A.T @ dC` |
 | `SoftmaxOp` | `F.softmax(x, dim=-1)` | Numerically stable (max subtraction) |

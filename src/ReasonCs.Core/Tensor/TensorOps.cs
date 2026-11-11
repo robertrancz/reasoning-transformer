@@ -1,11 +1,13 @@
+using System.Numerics;
+
 namespace ReasonCs.Core.Tensors;
 
 /// <summary>
 /// Core tensor math operations.
 ///
-/// PHASE 1 — Naive (loop-based) implementations only. Correctness is the
-/// sole priority here. SIMD/AVX2 fast-paths are added later, behind the
-/// same interface, once every operation is covered by passing unit tests.
+/// PHASE 2 — SIMD fast-path for MatMul using System.Numerics.Vector&lt;float&gt;.
+/// On AVX2 hardware this is 8-wide (256-bit); on SSE2 it is 4-wide (128-bit).
+/// The naive scalar path is retained as MatMulNaive for correctness tests.
 ///
 /// PyTorch equivalents (summary):
 ///   TensorOps.MatMul(a, b)          →  torch.matmul(a, b)  /  a @ b
@@ -24,30 +26,116 @@ public static class TensorOps
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// Naive O(M·K·N) MatMul — correctness reference implementation.
+    /// Hardware-dispatched MatMul: uses SIMD when Vector.IsHardwareAccelerated,
+    /// falls back to the scalar reference otherwise.
     /// PyTorch equivalent:  torch.matmul(a, b)  or  a @ b
     /// </summary>
     public static Tensor MatMul(Tensor a, Tensor b)
     {
         if (a.Rank != 2 || b.Rank != 2)
             throw new ArgumentException("MatMul requires rank-2 tensors.");
-        int m = a.Shape[0], k = a.Shape[1], n = b.Shape[1];
-        if (k != b.Shape[0])
-            throw new ArgumentException($"Shape mismatch: [{m},{k}] × [{b.Shape[0]},{n}]");
+        int M = a.Shape[0], K = a.Shape[1], N = b.Shape[1];
+        if (K != b.Shape[0])
+            throw new ArgumentException($"Shape mismatch: [{M},{K}] × [{b.Shape[0]},{N}]");
 
-        var c = new Tensor([m, n]);
-        for (int i = 0; i < m; i++)
-            for (int j = 0; j < n; j++)
+        return Vector.IsHardwareAccelerated
+            ? MatMulSimdCore(a.Data, b.Data, M, K, N)
+            : MatMulNaiveCore(a.Data, b.Data, M, K, N);
+    }
+
+    /// <summary>
+    /// Scalar reference MatMul — always uses the naive O(M·K·N) loop.
+    /// Used by unit tests to validate the SIMD path against this ground truth.
+    /// </summary>
+    public static Tensor MatMulNaive(Tensor a, Tensor b)
+    {
+        if (a.Rank != 2 || b.Rank != 2)
+            throw new ArgumentException("MatMul requires rank-2 tensors.");
+        int M = a.Shape[0], K = a.Shape[1], N = b.Shape[1];
+        if (K != b.Shape[0])
+            throw new ArgumentException($"Shape mismatch: [{M},{K}] × [{b.Shape[0]},{N}]");
+        return MatMulNaiveCore(a.Data, b.Data, M, K, N);
+    }
+
+    // ---- private cores -------------------------------------------------------
+
+    private static Tensor MatMulNaiveCore(float[] aData, float[] bData, int M, int K, int N)
+    {
+        var c     = new Tensor([M, N]);
+        var cData = c.Data;
+        for (int i = 0; i < M; i++)
+            for (int j = 0; j < N; j++)
             {
-                float sum = 0f;
-                for (int p = 0; p < k; p++)
-                    sum += a[i, p] * b[p, j];
-                c[i, j] = sum;
+                float sum  = 0f;
+                int   aOff = i * K;
+                int   bOff = j;          // step by N each iteration
+                for (int p = 0; p < K; p++, bOff += N)
+                    sum += aData[aOff + p] * bData[bOff];
+                cData[i * N + j] = sum;
             }
         return c;
     }
 
-    // TODO: MatMulSimd — SIMD-accelerated fast path (Phase 2)
+    /// <summary>
+    /// SIMD MatMul using System.Numerics.Vector&lt;float&gt;.
+    ///
+    /// Strategy:
+    ///   1. Physically transpose B → BT so BT[j, k] = B[k, j].
+    ///      Both A rows and BT rows are contiguous in memory, enabling
+    ///      SIMD loads of vecSize floats at a time from each.
+    ///   2. Accumulate a (vecSize-wide) vector: acc += va * vb,
+    ///      then do a single horizontal sum per output element.
+    ///   3. Scalar tail loop handles the K % vecSize remaining elements.
+    ///
+    /// Complexity: O(K·N) one-time transpose + O(M·K·N / vecSize) SIMD work
+    /// → ~8× throughput on AVX2 (Vector.Count = 8).
+    /// </summary>
+    private static Tensor MatMulSimdCore(float[] aData, float[] bData, int M, int K, int N)
+    {
+        // Step 1: Transpose B into a flat row-major array.
+        //         bT[j * K + k] = B[k * N + j]
+        var bT = new float[N * K];
+        for (int k = 0; k < K; k++)
+        {
+            int bRow = k * N;
+            for (int n = 0; n < N; n++)
+                bT[n * K + k] = bData[bRow + n];
+        }
+
+        // Step 2: SIMD dot products.
+        int vecSize = Vector<float>.Count;   // 8 on AVX2, 4 on SSE2
+        var c       = new Tensor([M, N]);
+        var cData   = c.Data;
+
+        for (int i = 0; i < M; i++)
+        {
+            int aOff = i * K;
+            for (int j = 0; j < N; j++)
+            {
+                int  bOff = j * K;
+                int  p    = 0;
+
+                // Vector accumulator — one horizontal reduction per output cell.
+                var acc = Vector<float>.Zero;
+                for (; p <= K - vecSize; p += vecSize)
+                    acc += new Vector<float>(aData, aOff + p)
+                         * new Vector<float>(bT,    bOff + p);
+
+                float sum = Vector.Sum(acc);
+
+                // Scalar tail for K % vecSize remaining elements.
+                for (; p < K; p++)
+                    sum += aData[aOff + p] * bT[bOff + p];
+
+                cData[i * N + j] = sum;
+            }
+        }
+        return c;
+    }
+
+    // -------------------------------------------------------------------------
+    // Transpose  [M, N] → [N, M]
+    // -------------------------------------------------------------------------
 
     /// <summary>
     /// Transpose a rank-2 tensor: [M, N] → [N, M].
@@ -64,6 +152,10 @@ public static class TensorOps
                 result[j, i] = a[i, j];
         return result;
     }
+
+    // -------------------------------------------------------------------------
+    // Reduction
+    // -------------------------------------------------------------------------
 
     /// <summary>
     /// Sum all elements to a scalar.
@@ -140,7 +232,7 @@ public static class TensorOps
         {
             double u1 = 1.0 - rng.NextDouble();
             double u2 = 1.0 - rng.NextDouble();
-            double r = Math.Sqrt(-2.0 * Math.Log(u1));
+            double r  = Math.Sqrt(-2.0 * Math.Log(u1));
             t.Data[i]     = (float)(mean + std * r * Math.Cos(2 * Math.PI * u2));
             if (i + 1 < t.Size)
                 t.Data[i + 1] = (float)(mean + std * r * Math.Sin(2 * Math.PI * u2));
