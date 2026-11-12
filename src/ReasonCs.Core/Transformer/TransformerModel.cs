@@ -211,8 +211,8 @@ public sealed class TransformerModel
     /// Backbone-only forward pass — returns the final LayerNorm hidden states
     /// [seqLen, EmbedDim] <em>without</em> applying the LM head.
     ///
-    /// Used by <see cref="ReasonCs.Core.Reasoning.RewardModel"/> to extract
-    /// per-token contextual representations from the frozen backbone.
+    /// Used by <see cref="ReasonCs.Core.Reasoning.RewardModel"/> when the backbone
+    /// is frozen (reward-model score head only; no backward through backbone).
     ///
     /// Note: updates the TransformerBlock internal caches (those from the most
     /// recent Forward() call are overwritten).  This is intentional — the
@@ -231,6 +231,101 @@ public sealed class TransformerModel
             x = block.Forward(x, seqLen);
         var (xNorm, _, _) = LayerNormOp.Forward(x, FinalGamma, FinalBeta);
         return xNorm;   // [seqLen, EmbedDim]
+    }
+
+    /// <summary>
+    /// Backbone-only forward that also saves activations needed by a subsequent
+    /// <see cref="BackwardFromHidden"/> call.
+    ///
+    /// Identical to <see cref="ForwardToHidden"/> except it populates the same
+    /// backward-pass caches as <see cref="Forward"/> (minus the LM-head path).
+    ///
+    /// Used by <see cref="ReasonCs.Core.Reasoning.RewardModel"/> when
+    /// <c>FreezeBackbone = false</c> — i.e., when gradient flow through the
+    /// backbone is desired for richer PRM representations.
+    ///
+    /// PyTorch equivalent:
+    ///   hidden = backbone(tokens)   # gradients enabled
+    /// </summary>
+    public Tensor ForwardToHiddenWithCache(int[] tokens)
+    {
+        int seqLen = tokens.Length;
+        var x = EmbeddingOp.Forward(TokenEmbedding, tokens);
+        foreach (var block in Blocks)
+            x = block.Forward(x, seqLen);
+        var (xNorm, finalMean, finalRstd) = LayerNormOp.Forward(x, FinalGamma, FinalBeta);
+        // Cache for BackwardFromHidden
+        _cacheTokens       = tokens;
+        _cacheXAfterBlocks = x;
+        _cacheXNorm        = xNorm;
+        _cacheFinalMean    = finalMean;
+        _cacheFinalRstd    = finalRstd;
+        return xNorm;   // [seqLen, EmbedDim]
+    }
+
+    /// <summary>
+    /// Backward pass from hidden-state gradients — no LM-head path.
+    /// Mirrors the FinalLN → Blocks → Embedding portion of <see cref="Backward"/>
+    /// without the LM-head term.
+    ///
+    /// Called by <see cref="ReasonCs.Core.Reasoning.RewardModel"/> when
+    /// <c>FreezeBackbone = false</c>.
+    ///
+    /// <paramref name="dXNorm"/> : gradient w.r.t. final LayerNorm output
+    ///     [seqLen, EmbedDim] — typically non-zero only at the last position.
+    ///
+    /// Accumulates gradients into DFinalGamma, DFinalBeta, all block D* tensors,
+    /// and DTokenEmbedding.
+    ///
+    /// PyTorch equivalent:
+    ///   hidden.backward(dXNorm)   # only the backbone part
+    /// </summary>
+    public void BackwardFromHidden(Tensor dXNorm)
+    {
+        if (_cacheXNorm is null || _cacheXAfterBlocks is null ||
+            _cacheFinalMean is null || _cacheFinalRstd is null || _cacheTokens is null)
+            throw new InvalidOperationException(
+                "BackwardFromHidden called before ForwardToHiddenWithCache.");
+
+        // ── Final LayerNorm ───────────────────────────────────────────────────
+        var (dx, dFinalGamma, dFinalBeta) = LayerNormOp.Backward(
+            dXNorm, _cacheXAfterBlocks, FinalGamma, _cacheFinalMean, _cacheFinalRstd);
+        TensorOps.AddTo(DFinalGamma, dFinalGamma);
+        TensorOps.AddTo(DFinalBeta,  dFinalBeta);
+
+        // ── Transformer blocks in reverse order ───────────────────────────────
+        for (int i = Blocks.Length - 1; i >= 0; i--)
+            dx = Blocks[i].Backward(dx);
+
+        // ── Token embedding scatter-add ───────────────────────────────────────
+        var dEmb = EmbeddingOp.Backward(dx, _cacheTokens, Config.VocabSize);
+        TensorOps.AddTo(DTokenEmbedding, dEmb);
+    }
+
+    /// <summary>
+    /// Copy all parameter weights from <paramref name="source"/> into this model.
+    ///
+    /// Only the weight values are copied — gradient accumulators are left untouched.
+    /// Both models must share the same <see cref="TransformerConfig"/> (identical
+    /// parameter shapes and count).
+    ///
+    /// Use this to create an independent copy of a trained model so that a second
+    /// training phase (e.g., PRM backbone fine-tuning) does not modify the original
+    /// weights.
+    ///
+    /// PyTorch equivalent:
+    ///   import copy
+    ///   new_model = copy.deepcopy(source)
+    /// </summary>
+    public void CopyWeightsFrom(TransformerModel source)
+    {
+        var srcParams = source.GetParamGrads().Select(pg => pg.param).ToArray();
+        var dstParams =        GetParamGrads().Select(pg => pg.param).ToArray();
+        if (srcParams.Length != dstParams.Length)
+            throw new InvalidOperationException(
+                "CopyWeightsFrom: source and destination have different parameter counts.");
+        for (int i = 0; i < srcParams.Length; i++)
+            Array.Copy(srcParams[i].Data, dstParams[i].Data, srcParams[i].Data.Length);
     }
 
     /// <summary>

@@ -55,15 +55,41 @@ public sealed class SyntheticDataset
     /// <summary>
     /// One reasoning problem.
     ///
-    /// Prompt      — the question string, ending with "?", e.g. "A=2 B=A+1 C=B*3 C=?"
-    /// Answer      — the expected answer string,           e.g. "9"
-    /// Steps       — evaluated intermediate assignments,   e.g. ["A=2", "B=3", "C=9"]
+    /// Prompt      — the question string, ending with "?",    e.g. "A=2 B=A+1 C=B*3 C=?"
+    /// Answer      — the expected final answer string,         e.g. "9"
+    /// Steps       — evaluated intermediate assignments,       e.g. ["A=2", "B=3", "C=9"]
     /// StepCorrect — correctness of each step (all true for generated data)
-    /// FullText    — Prompt + Answer (the sequence the model is trained on)
+    /// StepValues  — integer value of each step,              e.g. [2, 3, 9]
+    /// FullText    — Prompt + Answer  (ORM / single-answer training)
+    /// StepsChain  — step values padded to StepWidth chars each, e.g. "2  3  9  "
+    ///               (PRM / chain-of-thought training target)
+    /// FullTextChain — Prompt + StepsChain  (CoT training sequence)
     /// </summary>
-    public record Problem(string Prompt, string Answer, string[] Steps, bool[] StepCorrect)
+    public record Problem(string Prompt, string Answer, string[] Steps, bool[] StepCorrect, int[] StepValues)
     {
+        /// <summary>Width (chars) of each step slot in StepsChain.</summary>
+        public const int StepWidth = 3;
+
+        /// <summary>Training sequence for the original answer-only mode.</summary>
         public string FullText => Prompt + Answer;
+
+        /// <summary>
+        /// Chain-of-thought encoding: every step value right-padded with spaces to
+        /// <see cref="StepWidth"/> characters, concatenated.
+        ///
+        /// Examples:
+        ///   values [2, 3, 9]   → "2  3  9  "  (each 3 chars)
+        ///   values [8, 45]     → "8  45 "
+        ///   values [1, 2, 10]  → "1  2  10 "
+        /// </summary>
+        public string StepsChain =>
+            string.Concat(StepValues.Select(v => v.ToString().PadRight(StepWidth)));
+
+        /// <summary>Training sequence for chain-of-thought mode.</summary>
+        public string FullTextChain => Prompt + StepsChain;
+
+        /// <summary>Number of reasoning steps (= Steps.Length).</summary>
+        public int NumSteps => Steps.Length;
     }
 
     // Letters used as variable names, one per step
@@ -181,6 +207,9 @@ public sealed class SyntheticDataset
         // All generated steps are correct by construction
         var stepCorrect = Enumerable.Repeat(true, numSteps).ToArray();
 
-        return new Problem(prompt, answer, steps, stepCorrect);
+        // ── StepValues: integer value of each step ────────────────────────────
+        var stepValues = values[..numSteps].ToArray();
+
+        return new Problem(prompt, answer, steps, stepCorrect, stepValues);
     }
 }

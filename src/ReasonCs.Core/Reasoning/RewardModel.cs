@@ -63,6 +63,21 @@ public sealed class RewardModel
     public readonly Mode RewardMode;
     private readonly TransformerModel _backbone;
 
+    /// <summary>
+    /// When true (default), the backbone weights are frozen during training —
+    /// only <see cref="ScoreHead"/> is updated.
+    ///
+    /// When false, gradients flow through the full backbone, allowing the
+    /// transformer to learn richer representations for step-quality assessment.
+    /// Use a separate low-lr optimizer for backbone parameters via
+    /// <see cref="GetBackboneParamGrads"/>.
+    ///
+    /// PyTorch equivalent:
+    ///   # Frozen:   optimizer = AdamW(reward_model.score_head.parameters())
+    ///   # Unfrozen: optimizer = AdamW(reward_model.parameters())
+    /// </summary>
+    public bool FreezeBackbone { get; init; } = true;
+
     // Score head parameters and gradient accumulator  [EmbedDim, 1]
     public Tensor ScoreHead;
     public Tensor DScoreHead;
@@ -70,6 +85,7 @@ public sealed class RewardModel
     // Forward-pass cache (populated by Score(), consumed by Backward())
     private Tensor? _cacheLastHidden;   // last token's representation  [1, EmbedDim]
     private float   _cacheScore;        // sigmoid output of last Score() call
+    private int     _cacheSeqLen;       // total sequence length (needed for backbone backward)
 
     public RewardModel(TransformerModel backbone, Mode mode = Mode.ORM)
     {
@@ -103,10 +119,15 @@ public sealed class RewardModel
     /// </summary>
     public float Score(int[] tokens)
     {
-        // 1. Run frozen backbone: hidden [seqLen, D]
-        var hidden   = _backbone.ForwardToHidden(tokens);
+        // 1. Run backbone: hidden [seqLen, D]
+        //    Frozen path: ForwardToHidden (no cache; no backward support)
+        //    Unfrozen path: ForwardToHiddenWithCache (stores activations for Backward)
+        var hidden   = FreezeBackbone
+            ? _backbone.ForwardToHidden(tokens)
+            : _backbone.ForwardToHiddenWithCache(tokens);
         int seqLen   = hidden.Shape[0];
         int embedDim = hidden.Shape[1];
+        _cacheSeqLen = seqLen;
 
         // 2. Extract last token's representation → [1, D]
         var last   = new Tensor([1, embedDim]);
@@ -151,10 +172,23 @@ public sealed class RewardModel
         // Combined sigmoid + BCE gradient: dLogit = score − label
         float dLogit = _cacheScore - label;
 
-        // dHead[d, 0] += last[0, d] * dLogit  for all d
         int D = _cacheLastHidden.Shape[1];
+
+        // dHead[d, 0] += last[0, d] * dLogit  for all d
         for (int d = 0; d < D; d++)
             DScoreHead.Data[d] += _cacheLastHidden.Data[d] * dLogit;
+
+        // When backbone is unfrozen, propagate gradients back through it.
+        //   Linear backward:  dXNorm[last, d] = ScoreHead[d, 0] * dLogit
+        //   All earlier positions have zero gradient (only last token is scored).
+        if (!FreezeBackbone)
+        {
+            var dXNorm = new Tensor([_cacheSeqLen, D]);
+            int lastOff = (_cacheSeqLen - 1) * D;
+            for (int d = 0; d < D; d++)
+                dXNorm.Data[lastOff + d] = ScoreHead.Data[d] * dLogit;
+            _backbone.BackwardFromHidden(dXNorm);
+        }
 
         return loss;
     }
@@ -162,16 +196,51 @@ public sealed class RewardModel
     // ── Optimizer interface ───────────────────────────────────────────────────
 
     /// <summary>
-    /// Returns just (ScoreHead, DScoreHead) for the AdamW optimizer.
-    /// The backbone parameters are NOT included — they remain frozen.
+    /// Returns (ScoreHead, DScoreHead) for the score-head AdamW optimizer.
+    /// Backbone parameters are intentionally NOT included here — use a separate
+    /// lower-lr optimizer fed via <see cref="GetBackboneParamGrads"/>.
     /// </summary>
     public IEnumerable<(Tensor param, Tensor grad)> GetParamGrads()
     {
         yield return (ScoreHead, DScoreHead);
     }
 
-    /// <summary>Zero the score head gradient accumulator before each update.</summary>
+    /// <summary>
+    /// Returns all backbone (param, grad) pairs when <see cref="FreezeBackbone"/>
+    /// is false; otherwise returns an empty sequence.
+    ///
+    /// Pass these to a separate lower-lr optimizer so the backbone fine-tuning
+    /// step size doesn't disrupt the well-trained language-model representations.
+    ///
+    /// PyTorch equivalent:
+    ///   backbone_params = [p for p in model.backbone.parameters()]
+    ///   backbone_optimizer = torch.optim.AdamW(backbone_params, lr=3e-5)
+    /// </summary>
+    public IEnumerable<(Tensor param, Tensor grad)> GetBackboneParamGrads()
+    {
+        if (!FreezeBackbone)
+            foreach (var pg in _backbone.GetParamGrads())
+                yield return pg;
+    }
+
+    /// <summary>
+    /// Zero the score head gradient accumulator before each update.
+    /// </summary>
     public void ZeroGrad() => Array.Clear(DScoreHead.Data);
+
+    /// <summary>
+    /// Zero the score head and, when <see cref="FreezeBackbone"/> is false,
+    /// also zero the backbone gradient accumulators.
+    ///
+    /// Call this instead of <see cref="ZeroGrad"/> in the PRM unfrozen training
+    /// loop to avoid stale backbone gradients from a previous step.
+    /// </summary>
+    public void ZeroAllGrads()
+    {
+        ZeroGrad();
+        if (!FreezeBackbone)
+            _backbone.ZeroGrad();
+    }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

@@ -261,30 +261,39 @@ dotnet test ReasonCs.slnx
 - `TransformerModel.GradNorm()` — global L2 norm across all gradient tensors; logged each step ✅
 
 #### `Program.cs` — `src/ReasonCs.Runner/Program.cs`
-- Full pipeline: `Generate(5000)` → `TrainTestSplit` → `Tokenizer` → `TransformerModel` (134k params) → `TrainingLoop(10 000 steps)` → Greedy eval → ORM training (hard negatives) → dual ORM ranking eval → MCTS eval (all 500 problems) ✅
-- Vocab: 19 chars · 134 144 params (D=64, H=4, L=2, MLP=256) · **~2 min end-to-end on CPU** with SIMD
-- Loss: 2.92 → 0.66 (step 1000) → 0.50 (step 7000, plateau)
-- **Greedy baseline: 157/500 = 31.4%**
+- Full pipeline: `Generate(5000)` → `TrainTestSplit` → `Tokenizer` → `TransformerModel` (134k params) → `TrainingLoop(10 000 steps)` → Greedy eval → ORM training (hard negatives) → dual ORM ranking eval → MCTS eval → CoT retrain → PRM training → multi-step MCTS eval ✅
+- Vocab: 19 chars · 134 144 params (D=64, H=4, L=2, MLP=256) · **~12 min end-to-end on CPU** with SIMD
+- **Greedy baseline: 157/500 = 31.4%** (base LM) · **186/500 = 37.2%** (CoT LM)
 - **ORM ranking: 76.8%** (random wrong) · **76.0%** (model-sampled wrong)
 - **MCTS accuracy: 159/500 = 31.8%** (+0.4% delta) — ✓ Test-Time Compute demonstrated
+- **PRM accuracy: 74.3%** (random wrong) · **71.0%** (model-sampled wrong)
+- **PRM MCTS accuracy: 178/500 = 35.6%** (−1.6% vs CoT greedy 37.2%)
 
 #### `RewardModel` — `src/ReasonCs.Core/Reasoning/RewardModel.cs`
 - **Architecture** — linear scoring head `[EmbedDim, 1]` on top of a frozen backbone; `sigmoid(last_hidden @ ScoreHead)` → scalar ∈ (0,1) ✅
-- **`Score(tokens)`** — runs `backbone.ForwardToHidden(tokens)`, takes last token's post-LN repr, applies score head + sigmoid ✅
-- **`Backward(label)`** — backpropagates only through score head (backbone frozen); combined sigmoid+BCE gradient `dLogit = score − label` → accumulates `DScoreHead` ✅
+- **`Score(tokens)`** — when `FreezeBackbone=true` (default): `backbone.ForwardToHidden(tokens)`; when false: `ForwardToHiddenWithCache(tokens)` for backward ✅
+- **`Backward(label)`** — backpropagates through score head; when `FreezeBackbone=false` also runs `BackwardFromHidden(dXNorm)` ✅
 - **`GetParamGrads()` / `ZeroGrad()`** — yields just (ScoreHead, DScoreHead); backbone params excluded ✅
-- Only **64 trainable parameters** (EmbedDim=64 score head); backbone stays frozen
+- **`GetBackboneParamGrads()`** — yields backbone (param, grad) pairs when `FreezeBackbone=false`; pass to separate low-lr optimizer ✅
+- **`ZeroAllGrads()`** — zeros score head + backbone grads (when unfrozen) ✅
+- **`FreezeBackbone`** property (default true) — keep frozen for MCTS: same representation space as generation model gives better candidate scoring ✅
+- Only **64 trainable parameters** (EmbedDim=64 score head) when frozen
 
 #### `RewardTrainer` — `src/ReasonCs.Core/Training/RewardTrainer.cs`
 - **`TrainOrm(..., baseModel?, negativeTemp)`** — balanced pos/neg curriculum; when `baseModel` is provided, negatives are **model-sampled hard negatives** (temperature-sampled from the base LM) rather than random integers — matches MCTS inference distribution ✅
 - **`EvalOrmRanking(..., baseModel?, negativeTemp)`** — ranking accuracy P(correct > wrong); supports both random and model-sampled negative eval ✅
+- **`TrainPrm(..., backboneOptimizer?, baseModel?, negativeTemp)`** — step-level PRM training; when `backboneOptimizer` set, fine-tunes backbone with low lr; when `baseModel` set, uses model-sampled wrong steps as hard negatives ✅
+- **`EvalPrmRanking(..., baseModel?, negTemp)`** — averaged over all step depths; supports both random and model-sampled negative eval ✅
 - **`PadContinuation(s)`** — pads/truncates to exactly `ContinuationLen=2` chars so ORM's last-token position is always `promptLen+1` ✅
 - **`SampleWrongAnswer(correct, rng)`** — random integer fallback; public for tests ✅
 - **`SampleModelWrongAnswer(...)`** — temperature-samples `ContinuationLen` tokens from base LM; returns null if accidentally correct ✅
+- **`SampleModelWrongStep(...)`** — temperature-samples one step (StepWidth tokens) from base LM given prompt+correct-prefix; returns null if accidentally correct ✅
 
-#### `ForwardToHidden` — added to `TransformerModel`
-- Runs Embedding→Blocks→FinalLN without applying the LM head; returns `[seqLen, EmbedDim]` ✅
-- Backbone caches are updated but backbone backward is never called during ORM training
+#### `ForwardToHidden` / `ForwardToHiddenWithCache` / `BackwardFromHidden` — added to `TransformerModel`
+- `ForwardToHidden` — Embedding→Blocks→FinalLN without LM head (no backward cache) ✅
+- `ForwardToHiddenWithCache` — same but stores backward-pass caches for `BackwardFromHidden` ✅
+- `BackwardFromHidden(dXNorm)` — FinalLN→Blocks→Embedding backward (no LM head) ✅
+- `CopyWeightsFrom(source)` — copies all parameter weights from another model; used to create independent PRM backbone copy ✅
 
 #### `MctsSearch` — `src/ReasonCs.Core/Reasoning/MctsSearch.cs`
 - **4-phase MCTS loop** over reasoning *steps* (not individual tokens): Select → Expand → Evaluate → Backpropagate ✅
@@ -308,14 +317,9 @@ dotnet test ReasonCs.slnx
 
 ### 🔜 What's Next (ordered by plan)
 
-1. **PRM (Process Reward Model)** — extend ORM to score *intermediate reasoning steps*, not just final answers
-   - Step-level correctness labels are already available via `SyntheticDataset.Problem.Steps`
-   - Enables `MaxDepth>1` multi-step MCTS (currently limited to depth 1 by ORM distribution)
-   - Target: MCTS with multi-step lookahead should beat flat depth-1 search
-
-2. **RL fine-tuning** — use ORM as reward signal to improve the base LM via policy gradient (REINFORCE or PPO-lite)
+1. **RL fine-tuning** — use ORM as reward signal to improve the base LM via policy gradient (REINFORCE or PPO-lite)
    - Closes the loop: better base model → better MCTS candidates → higher accuracy
-   - Base LM currently at 31.4% greedy — more training or RL should push this significantly higher
+   - Base LM at 31.4% greedy; CoT LM at 37.2% — RL should push significantly higher
 
 ---
 
@@ -358,10 +362,10 @@ Every handcrafted implementation carries a full `/// PyTorch equivalent:` sectio
 | `SyntheticDataset` | `torch.utils.data.Dataset` | Programmatic step labels (no human annotation) |
 | `Evaluator` | `model.eval()` + `torch.no_grad()` + `argmax` | Greedy decoding; `decoded[..answer.Length]==answer` (char-level exact match) |
 | `MctsEvaluator` | vLLM best-of-N + verifier | Mirrors `Evaluator`; same correctness check for fair comparison |
-| `RewardModel` | Custom `nn.Module` + `nn.Linear` head | ORM: 64-param score head; backbone frozen |
-| `RewardTrainer` | Custom training loop | Hard negatives: model-sampled via temperature sampling; dual ORM eval |
+| `RewardModel` | Custom `nn.Module` + `nn.Linear` head | ORM/PRM: 64-param score head; `FreezeBackbone` flag; `GetBackboneParamGrads` for 2-optimizer fine-tuning |
+| `RewardTrainer` | Custom training loop | ORM/PRM training; hard negatives (model-sampled); dual random/model-sampled eval; `SampleModelWrongStep` for PRM |
 | `MctsNode` | Plain dataclass (no PyTorch equivalent) | Pure search data structure; `Depth` property for `MaxDepth` guard |
-| `MctsSearch` | No PyTorch equivalent — closest: vLLM best-of-N + reward reranker | 4-phase MCTS; MaxDepth=1 (flat tree); T=0.2 |
+| `MctsSearch` | No PyTorch equivalent — closest: vLLM best-of-N + reward reranker | 4-phase MCTS; MaxDepth=1 (flat ORM) or MaxDepth=3 (PRM CoT); PRM used at all depths |
 | `RunLogger` | `logging` / TensorBoard `SummaryWriter` | File + console; STEP/EVAL/PRED structured lines; no external deps |
 
 ---

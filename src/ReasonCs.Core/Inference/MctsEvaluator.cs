@@ -1,6 +1,7 @@
 using ReasonCs.Core.Data;
 using ReasonCs.Core.Diagnostics;
 using ReasonCs.Core.Reasoning;
+using ReasonCs.Core.Transformer;
 
 namespace ReasonCs.Core.Inference;
 
@@ -46,17 +47,34 @@ public static class MctsEvaluator
             var newTokens  = bestTokens[promptTokens.Length..];
             var decoded    = tokenizer.Decode(newTokens);
 
-            // Take only the first answer.Length characters — beyond that is
-            // forced-generation noise (the model keeps generating after its answer).
-            string prediction = decoded.Length >= problem.Answer.Length
-                ? decoded[..problem.Answer.Length]
-                : decoded;
-            bool isCorrect = string.Equals(prediction, problem.Answer, StringComparison.Ordinal);
+            bool isCorrect;
+            string logPrediction;
+
+            if (mcts.MaxDepth > 1)
+            {
+                // Chain-of-thought mode: check the last step value
+                int stepW     = SyntheticDataset.Problem.StepWidth;
+                int lastStart = (problem.NumSteps - 1) * stepW;
+                string lastStep = decoded.Length > lastStart
+                    ? decoded[lastStart..Math.Min(lastStart + stepW, decoded.Length)].TrimEnd()
+                    : "";
+                isCorrect    = string.Equals(lastStep, problem.Answer, StringComparison.Ordinal);
+                logPrediction = lastStep;
+            }
+            else
+            {
+                // Answer-only mode (MaxDepth=1): take first answer.Length chars
+                string prediction = decoded.Length >= problem.Answer.Length
+                    ? decoded[..problem.Answer.Length]
+                    : decoded;
+                isCorrect     = string.Equals(prediction, problem.Answer, StringComparison.Ordinal);
+                logPrediction = prediction;
+            }
+
             if (isCorrect) correct++;
             total++;
 
-            // Log shows exactly 'prediction' — no trailing noise characters.
-            logger?.Prediction(problem.Prompt, problem.Answer, prediction, isCorrect);
+            logger?.Prediction(problem.Prompt, problem.Answer, logPrediction, isCorrect);
         }
 
         float accuracy = total == 0 ? 0f : (float)correct / total;

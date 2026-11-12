@@ -80,6 +80,17 @@ public sealed class MctsSearch
     private readonly TransformerModel _model;
     private readonly RewardModel      _reward;
 
+    /// <summary>
+    /// Optional Process Reward Model for scoring non-leaf nodes.
+    ///
+    /// When set, non-leaf nodes (depth &lt; <see cref="MaxDepth"/>) are scored by
+    /// <see cref="PrmModel"/> and leaf nodes (depth == <see cref="MaxDepth"/>) are
+    /// scored by the ORM passed to the constructor.
+    ///
+    /// When null, the ORM is used at all depths (existing flat-tree behaviour).
+    /// </summary>
+    public RewardModel? PrmModel { get; init; }
+
     // Lazy because init-only Seed is set by the object initializer after the ctor.
     private Random? _rng;
     private Random  Rng => _rng ??= new Random(Seed);
@@ -128,12 +139,20 @@ public sealed class MctsSearch
             Backpropagate(leaf, value);
         }
 
-        // Return the highest-Q child's token sequence; fall back to prompt
-        // if no children were created (e.g. budget = 0).
+        // Trace the best-Q path from root down to its deepest descendant and
+        // return that leaf's full token sequence.
+        //
+        // For MaxDepth=1 (flat tree): best root child = the one answer candidate.
+        // For MaxDepth>1 (multi-step): follow Q-argmax at each level to get the
+        //   complete reasoning chain.  Returning a root child would only give the
+        //   FIRST step, not the full chain needed by the CoT evaluator.
         if (root.Children.Count == 0)
             return promptTokens;
 
-        return root.Children.MaxBy(c => c.Q)!.Tokens;
+        var best = root.Children.MaxBy(c => c.Q)!;
+        while (best.Children.Count > 0)
+            best = best.Children.MaxBy(c => c.Q)!;
+        return best.Tokens;
     }
 
     // ── Phase 1: Selection ────────────────────────────────────────────────────
@@ -203,10 +222,15 @@ public sealed class MctsSearch
             if (!seenContinuations.Add(contKey))
                 continue;   // duplicate — try again
 
-            // Score the candidate sequence.
-            // Candidates have exactly leaf.Tokens.Length + StepTokenLen tokens,
-            // matching the ORM training distribution (prompt + ContinuationLen=2).
-            float score = _reward.Score(candidateTokens);
+            // Score the candidate.
+            // When PrmModel is set: use PRM at ALL depths.
+            //   PRM was trained on partial chains at every depth boundary, so it
+            //   can score any length sequence from depth 1 up to MaxDepth.
+            //   This avoids using the ORM (trained on 2-char sequences) on longer
+            //   CoT chains where it would produce garbage scores.
+            // When PrmModel is null: use ORM at all depths (flat-tree, MaxDepth=1).
+            var scorer = PrmModel ?? _reward;
+            float score = scorer.Score(candidateTokens);
 
             var child = new MctsNode(candidateTokens, parent: leaf, priorScore: score);
             leaf.Children.Add(child);

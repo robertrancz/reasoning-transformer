@@ -70,6 +70,54 @@ public sealed class Evaluator
     /// written to the log file (file-only — too verbose for the console).
     /// The aggregate result is always logged to both console and file.
     /// </summary>
+    /// <summary>
+    /// Run greedy-decoding accuracy in <b>chain-of-thought mode</b>.
+    ///
+    /// The model generates <c>numSteps × StepWidth</c> tokens.  A prediction
+    /// is correct if the LAST step's decoded value (trimmed of padding spaces)
+    /// equals <c>problem.Answer</c>.
+    ///
+    /// This evaluator pairs with the CoT training format
+    /// (<c>problem.FullTextChain</c>) and PRM-guided MCTS.
+    /// </summary>
+    public static EvalResult RunGreedyCoT(
+        TransformerModel model,
+        Tokenizer tokenizer,
+        IEnumerable<SyntheticDataset.Problem> testSet,
+        RunLogger? logger = null)
+    {
+        int correct = 0, total = 0;
+
+        foreach (var problem in testSet)
+        {
+            int maxNew     = problem.NumSteps * SyntheticDataset.Problem.StepWidth;
+            var promptToks = tokenizer.Encode(problem.Prompt);
+            var allToks    = model.GreedyDecode(promptToks, maxNew);
+            var newToks    = allToks[promptToks.Length..];
+            var decoded    = tokenizer.Decode(newToks);
+
+            // Last step starts at (NumSteps-1)*StepWidth
+            int lastStart  = (problem.NumSteps - 1) * SyntheticDataset.Problem.StepWidth;
+            string lastStep = decoded.Length > lastStart
+                ? decoded[lastStart..Math.Min(lastStart + SyntheticDataset.Problem.StepWidth,
+                                              decoded.Length)].TrimEnd()
+                : "";
+
+            bool isCorrect = string.Equals(lastStep, problem.Answer, StringComparison.Ordinal);
+            if (isCorrect) correct++;
+            total++;
+
+            logger?.Prediction(problem.Prompt, problem.Answer,
+                decoded.Length >= decoded.Length ? decoded[..Math.Min(decoded.Length, maxNew)] : decoded,
+                isCorrect);
+        }
+
+        float accuracy = total == 0 ? 0f : (float)correct / total;
+        var   result   = new EvalResult(correct, total, accuracy);
+        logger?.Eval(correct, total, accuracy);
+        return result;
+    }
+
     public static EvalResult RunGreedy(
         TransformerModel model,
         Tokenizer tokenizer,
