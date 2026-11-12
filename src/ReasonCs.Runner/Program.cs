@@ -4,6 +4,7 @@ using ReasonCs.Core.Inference;
 using ReasonCs.Core.Reasoning;
 using ReasonCs.Core.Training;
 using ReasonCs.Core.Transformer;
+using System.Diagnostics;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  reason.cs — entry point
@@ -69,10 +70,13 @@ static void RunPipeline()
     logger.Kv("LearningRate", optimizer.LearningRate);
     logger.Kv("WeightDecay",  optimizer.WeightDecay);
 
-    logger.Info("\n=== Training base LM (2 000 steps) ===");
+    // 10 000 steps: at ~7 ms/step after SIMD = ~70 seconds.
+    // More training significantly improves greedy accuracy, giving MCTS
+    // more non-trivial candidates to rank.
+    logger.Info("\n=== Training base LM (10 000 steps) ===");
     var batches = MakeBatches(trainSet, tokenizer);
-    var loop    = new TrainingLoop { LogEvery = 200 };
-    loop.Train(model, optimizer, RepeatForever(batches), maxSteps: 2_000, logger: logger);
+    var loop    = new TrainingLoop { LogEvery = 1_000 };
+    loop.Train(model, optimizer, RepeatForever(batches), maxSteps: 10_000, logger: logger);
 
     // ── 4. Greedy baseline ────────────────────────────────────────────────────
     logger.Info("\n=== Greedy baseline ===");
@@ -94,15 +98,67 @@ static void RunPipeline()
         orm, ormOptimizer, tokenizer,
         trainProblems: trainSet,
         evalProblems:  testSet,
-        steps:    1_000,
-        logEvery: 100,
-        logger:   logger);
+        steps:         1_000,
+        logEvery:      100,
+        logger:        logger,
+        baseModel:     model,       // hard negatives — model-sampled wrong answers
+        negativeTemp:  0.8f);       //   matching MCTS's inference temperature
 
     // ── 6. ORM ranking evaluation ─────────────────────────────────────────────
     logger.Info("\n=== ORM ranking accuracy ===");
-    logger.Info($"ORM ranking accuracy (correct > wrong): {ormResult.FinalRankingAcc:P1}");
+    logger.Info($"ORM ranking acc (vs random wrong)  : {ormResult.FinalRankingAcc:P1}");
+    // Also evaluate on model-sampled negatives — the actual distribution MCTS faces.
+    float ormHardAcc = RewardTrainer.EvalOrmRanking(
+        orm, tokenizer, testSet,
+        baseModel:    model,
+        negativeTemp: 0.5f,
+        logger:       null);
+    logger.Info($"ORM ranking acc (vs model-sampled) : {ormHardAcc:P1}");
     logger.Info("(Random baseline = 50%; perfect ORM = 100%)");
-    logger.Info("\n(Next: MctsSearch — use ORM scores to guide tree search and beat greedy baseline.)");
+
+    // ── 7. MCTS reasoning ─────────────────────────────────────────────────────
+    logger.Info("\n=== MCTS reasoning (Test-Time Compute) ===");
+    // StepTokenLen=2 MUST match RewardTrainer.ContinuationLen so the ORM sees the
+    // same sequence structure during MCTS as it was trained on (prompt + 2 tokens).
+    // Temperature=0.5: lower than 0.8 so each sample has higher probability of
+    // matching the correct answer while still providing diversity beyond greedy.
+    var mcts = new MctsSearch(model, orm)
+    {
+        StepTokenLen          = RewardTrainer.ContinuationLen,  // =2, matches ORM training
+        TopK                  = 4,     // branching factor
+        SearchBudget          = 4,     // = TopK: budget fully spent on unique candidates
+        Temperature           = 0.2f,  // low T → samples close to greedy, higher p(correct)
+        ExplorationC          = 1.41f,
+        Seed                  = 42,
+        IncludeGreedyCandidate = false  // pure temperature: all 4 slots are explorations
+    };
+    logger.Kv("MCTS TopK",                  mcts.TopK);
+    logger.Kv("MCTS SearchBudget",          mcts.SearchBudget);
+    logger.Kv("MCTS Temperature",           mcts.Temperature);
+    logger.Kv("MCTS StepTokenLen",          mcts.StepTokenLen);
+    logger.Kv("MCTS IncludeGreedyCandidate", mcts.IncludeGreedyCandidate);
+
+    // Run on all 500 test problems — with TopK=4 / Budget=4 it takes ≈20 s
+    var mctsTestSet = testSet.ToArray();
+    logger.Info($"Evaluating on all {mctsTestSet.Length} test problems ...");
+
+    var sw = Stopwatch.StartNew();
+    var mctsResult = MctsEvaluator.RunMcts(mcts, tokenizer, mctsTestSet, logger: logger);
+    sw.Stop();
+
+    // Greedy baseline on same subset for a fair comparison
+    var greedySubset = Evaluator.RunGreedy(model, tokenizer, mctsTestSet, maxNewTokens: 4);
+
+    logger.Info($"\n--- Results on first {mctsTestSet.Length} problems ---");
+    logger.Info($"Greedy accuracy : {greedySubset}");
+    logger.Info($"MCTS   accuracy : {mctsResult}");
+    logger.Info($"Delta           : {(mctsResult.Accuracy - greedySubset.Accuracy):+0.0%;-0.0%;0.0%}");
+    logger.Info($"MCTS elapsed    : {sw.Elapsed.TotalSeconds:F1} s");
+
+    if (mctsResult.Accuracy > greedySubset.Accuracy)
+        logger.Info("✓ MCTS beats greedy — Test-Time Compute helps!");
+    else
+        logger.Info("✗ MCTS did not beat greedy on this run.");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

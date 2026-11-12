@@ -85,14 +85,21 @@ public sealed class RewardModel
 
     // ── Forward ───────────────────────────────────────────────────────────────
 
+    // ── Forward ───────────────────────────────────────────────────────────────
+
     /// <summary>
-    /// Score a (partial) token sequence.
+    /// Score a token sequence.
     ///
-    /// ORM: call once on the full sequence (prompt + answer).
+    /// ORM: call once on the full sequence (prompt + padded continuation).
     /// PRM: call after each reasoning step.
     ///
     /// Returns a scalar in (0, 1) — higher → answer more likely correct.
-    /// Caches the last-token hidden state and the sigmoid output for <see cref="Backward"/>.
+    /// Caches the last-token hidden state and sigmoid output for <see cref="Backward"/>.
+    ///
+    /// For training / MCTS consistency, always pass a sequence whose length is
+    /// <c>promptLen + ContinuationLen</c> tokens (see <see cref="RewardTrainer.PadContinuation"/>
+    /// and <see cref="MctsSearch.StepTokenLen"/>).  When all sequences share the same
+    /// total length the last-token representation is a stable, well-defined signal.
     /// </summary>
     public float Score(int[] tokens)
     {

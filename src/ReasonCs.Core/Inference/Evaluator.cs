@@ -26,9 +26,25 @@ namespace ReasonCs.Core.Inference;
 ///   logits.argmax(-1)  — greedy decoding: always pick the most probable next token.
 ///
 /// Accuracy definition (used here):
-///   A prediction is CORRECT if the first len(expected_answer) decoded characters
-///   exactly match the expected answer string.  Any trailing generated tokens are
-///   ignored.  This mirrors how real evaluation pipelines check final answers.
+///   The tokenizer is character-level (one token = one character).
+///   A prediction is CORRECT if the first answer.Length generated characters
+///   exactly equal the expected answer string.  Tokens beyond answer.Length are
+///   forced-generation noise (the model keeps generating after the answer ends)
+///   and are ignored.
+///
+///   Examples (answer="0", 1 char; model decodes 4 tokens):
+///     decoded="0   " → prediction="0" == "0" → CORRECT  (noise = spaces)
+///     decoded="02XY" → prediction="0" == "0" → CORRECT  (noise = "2XY"; first char is right)
+///     decoded="7XYZ" → prediction="7" ≠ "0" → WRONG
+///
+///   Examples (answer="30", 2 chars):
+///     decoded="30  " → prediction="30" == "30" → CORRECT
+///     decoded="3012" → prediction="30" == "30" → CORRECT  (noise = "12")
+///     decoded="31XY" → prediction="31" ≠ "30" → WRONG
+///
+///   NOTE: "02" in the log for answer "0" looks confusing but IS correct —
+///   the model predicted "0" (right), then "2" as noise.  The log shows
+///   exactly prediction.Length chars so this confusion no longer arises.
 /// </summary>
 public sealed class Evaluator
 {
@@ -72,15 +88,22 @@ public sealed class Evaluator
             var newTokens = allTokens[promptTokens.Length..];
             var decoded   = tokenizer.Decode(newTokens);
 
-            // Correct if decoded output starts with the expected answer
-            bool isCorrect = decoded.StartsWith(problem.Answer, StringComparison.Ordinal);
+            // The tokenizer is character-level: one token = one character.
+            // Only the first answer.Length characters are the model's actual
+            // answer; characters beyond that are forced-generation noise.
+            // Take exactly answer.Length chars and compare — this is equivalent
+            // to StartsWith but also fixes the log display (no confusing noise).
+            string prediction = decoded.Length >= problem.Answer.Length
+                ? decoded[..problem.Answer.Length]
+                : decoded;
+            bool isCorrect = string.Equals(prediction, problem.Answer, StringComparison.Ordinal);
             if (isCorrect) correct++;
             total++;
 
-            // Per-prediction log line (file only — 500 lines is noisy on console)
-            logger?.Prediction(problem.Prompt, problem.Answer,
-                               decoded[..Math.Min(decoded.Length, problem.Answer.Length + 2)],
-                               isCorrect);
+            // Per-prediction log line (file only — 500 lines is noisy on console).
+            // Log shows exactly 'prediction' (answer.Length chars) — no trailing
+            // noise so "expect='0', got='0'" is unambiguous.
+            logger?.Prediction(problem.Prompt, problem.Answer, prediction, isCorrect);
         }
 
         float accuracy = total == 0 ? 0f : (float)correct / total;

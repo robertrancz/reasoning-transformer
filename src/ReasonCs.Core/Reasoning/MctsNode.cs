@@ -51,4 +51,7 @@ public sealed class MctsNode
     }
 
     public bool IsLeaf => Children.Count == 0;
+
+    /// <summary>Distance from the root (root = 0).</summary>
+    public int Depth => Parent is null ? 0 : Parent.Depth + 1;
 }
