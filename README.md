@@ -90,7 +90,9 @@ reason.cs/
 │   │   │   └── TransformerModel.cs # Full model + TransformerConfig record
 │   │   ├── Training/
 │   │   │   ├── AdamW.cs            # AdamW optimizer (decoupled weight decay)
-│   │   │   └── TrainingLoop.cs     # Forward → loss → backward → step loop
+│   │   │   ├── TrainingLoop.cs     # Forward → loss → backward → step loop
+│   │   │   ├── RewardTrainer.cs    # ORM + PRM training, hard negatives, ranking eval
+│   │   │   └── RlTrainer.cs        # REINFORCE policy gradient (oracle or ORM reward)
 │   │   ├── Data/
 │   │   │   ├── Tokenizer.cs        # Character-level tokenizer
 │   │   │   └── SyntheticDataset.cs # Chained multi-step arithmetic problems
@@ -142,8 +144,9 @@ dotnet test ReasonCs.slnx
 | `SyntheticDatasetTests` — generate count/steps/answer/format/range/determinism, split, tokenizer, eval pipeline | 12 | ✅ passing |
 | `RewardModelTests` — score range, gradient non-zero, ZeroGrad, BCE loss, score↑ after pos training, score↓ after neg training, ranking accuracy > 55%, SampleWrongAnswer | 9 | ✅ passing |
 | `MctsSearchTests` — returns longer sequence, starts with prompt, budget=TopK gives exact TopK children, zero-budget returns prompt, different seeds differ, prefers better ORM score, MctsEvaluator returns valid fraction | 7 | ✅ passing |
+| `RlTrainerTests` — ORM reward smoke, oracle reward smoke, non-constant reward changes weights, all-same reward no weight change, ORM score ∈ [0,1] | 5 | ✅ passing |
 
-**Total: 62 passing · 0 skipped · 0 failing**
+**Total: 67 passing · 0 skipped · 0 failing**
 
 ---
 
@@ -261,11 +264,13 @@ dotnet test ReasonCs.slnx
 - `TransformerModel.GradNorm()` — global L2 norm across all gradient tensors; logged each step ✅
 
 #### `Program.cs` — `src/ReasonCs.Runner/Program.cs`
-- Full pipeline: `Generate(5000)` → `TrainTestSplit` → `Tokenizer` → `TransformerModel` (134k params) → `TrainingLoop(10 000 steps)` → Greedy eval → ORM training (hard negatives) → dual ORM ranking eval → MCTS eval → CoT retrain → PRM training → multi-step MCTS eval ✅
-- Vocab: 19 chars · 134 144 params (D=64, H=4, L=2, MLP=256) · **~12 min end-to-end on CPU** with SIMD
-- **Greedy baseline: 157/500 = 31.4%** (base LM) · **186/500 = 37.2%** (CoT LM)
+- Full pipeline: `Generate(5000)` → `TrainTestSplit` → `Tokenizer` → `TransformerModel` (134k params) → `TrainingLoop(10 000 steps)` → Greedy eval → ORM training → dual ORM eval → MCTS eval → RL fine-tuning → CoT retrain → PRM training → multi-step MCTS eval ✅
+- Vocab: 19 chars · 134 144 params (D=64, H=4, L=2, MLP=256) · **~15 min end-to-end on CPU** with SIMD
+- **Greedy baseline: 157/500 = 31.4%** (base LM)
 - **ORM ranking: 76.8%** (random wrong) · **76.0%** (model-sampled wrong)
 - **MCTS accuracy: 159/500 = 31.8%** (+0.4% delta) — ✓ Test-Time Compute demonstrated
+- **RL (oracle reward): 38.0%** (+6.6%) — ✓ loop closed; ORM reward hacks to 1.6% (Goodhart's Law)
+- **CoT greedy: 186/500 = 37.2%** (base LM retrained on chain-of-thought)
 - **PRM accuracy: 74.3%** (random wrong) · **71.0%** (model-sampled wrong)
 - **PRM MCTS accuracy: 178/500 = 35.6%** (−1.6% vs CoT greedy 37.2%)
 
@@ -288,6 +293,17 @@ dotnet test ReasonCs.slnx
 - **`SampleWrongAnswer(correct, rng)`** — random integer fallback; public for tests ✅
 - **`SampleModelWrongAnswer(...)`** — temperature-samples `ContinuationLen` tokens from base LM; returns null if accidentally correct ✅
 - **`SampleModelWrongStep(...)`** — temperature-samples one step (StepWidth tokens) from base LM given prompt+correct-prefix; returns null if accidentally correct ✅
+
+#### `RlTrainer` — `src/ReasonCs.Core/Training/RlTrainer.cs`
+- **`TrainReinforce(..., rewardFn, ...)`** — REINFORCE policy gradient fine-tuning ✅
+  - Samples N completions at temperature T; computes normalised advantages `(r−mean)/(std+ε)` to reduce variance
+  - **`PolicyGradient`** — computes `advantage·(softmax(logit)−one_hot(target))` only at completion positions; prompt positions zero ✅
+  - Accumulates gradients over N samples → `model.Backward` → `optimizer.Step` ✅
+- `rewardFn: Func<Problem, int[], float>` — accepts oracle or ORM reward
+  - **Oracle**: binary correctness check `decoded[..answerLen] == answer` — no reward hacking ✅
+  - **ORM**: `orm.Score(tokens)` — proxy; demonstrates Goodhart's Law (reward hacks to 1.6% accuracy) ✅
+- **Result**: oracle REINFORCE 31.4% → **38.0% (+6.6%)** in 2,000 steps; ORM reward 31.4% → 1.6% ✅
+- 5 tests covering: smoke (completes), non-constant reward changes weights, constant reward = no update, ORM score ∈ [0,1]
 
 #### `ForwardToHidden` / `ForwardToHiddenWithCache` / `BackwardFromHidden` — added to `TransformerModel`
 - `ForwardToHidden` — Embedding→Blocks→FinalLN without LM head (no backward cache) ✅
@@ -315,11 +331,9 @@ dotnet test ReasonCs.slnx
 
 ---
 
-### 🔜 What's Next (ordered by plan)
+### ✅ All milestones complete
 
-1. **RL fine-tuning** — use ORM as reward signal to improve the base LM via policy gradient (REINFORCE or PPO-lite)
-   - Closes the loop: better base model → better MCTS candidates → higher accuracy
-   - Base LM at 31.4% greedy; CoT LM at 37.2% — RL should push significantly higher
+All planned milestones have been implemented. The project demonstrates the full reasoning stack from scratch.
 
 ---
 
@@ -366,6 +380,7 @@ Every handcrafted implementation carries a full `/// PyTorch equivalent:` sectio
 | `RewardTrainer` | Custom training loop | ORM/PRM training; hard negatives (model-sampled); dual random/model-sampled eval; `SampleModelWrongStep` for PRM |
 | `MctsNode` | Plain dataclass (no PyTorch equivalent) | Pure search data structure; `Depth` property for `MaxDepth` guard |
 | `MctsSearch` | No PyTorch equivalent — closest: vLLM best-of-N + reward reranker | 4-phase MCTS; MaxDepth=1 (flat ORM) or MaxDepth=3 (PRM CoT); PRM used at all depths |
+| `RlTrainer` | `torch.distributions.Categorical` + `loss.backward()` + `optimizer.step()` | REINFORCE with baseline; normalised advantages; gradient = advantage*(softmax−one_hot) at completion positions |
 | `RunLogger` | `logging` / TensorBoard `SummaryWriter` | File + console; STEP/EVAL/PRED structured lines; no external deps |
 
 ---

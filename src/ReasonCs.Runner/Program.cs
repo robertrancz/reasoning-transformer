@@ -160,7 +160,69 @@ static void RunPipeline()
     else
         logger.Info("✗ MCTS did not beat greedy on this run.");
 
-    // ── 8. Chain-of-Thought retraining + PRM ─────────────────────────────────
+    // ── 8. RL fine-tuning (REINFORCE + oracle reward) ─────────────────────────
+    // Closes the loop: LM → ORM (not used here) → REINFORCE → improved LM.
+    //
+    // Reward function choices:
+    //   ORM reward:    orm.Score(tokens)           → proxy signal; 76.8% accurate
+    //                  ⚠ CAUSES REWARD HACKING: model learns to fool the ORM
+    //                    (ORM score ↑ but real accuracy collapses to ~1%)
+    //
+    //   Oracle reward: 1 if decoded answer is correct, else 0  ← used here
+    //                  ✓ Perfect signal for the synthetic dataset (labels available)
+    //                    No reward hacking possible; reward IS correctness
+    //
+    // The oracle is only feasible when ground-truth labels exist at inference time.
+    // In production (e.g., math competition) you'd need an ORM or learned verifier.
+    logger.Info("\n=== RL Fine-Tuning (REINFORCE + oracle verifier reward) ===");
+
+    // Create a fresh optimizer at lower lr to avoid disrupting the pretrained LM.
+    // Rule of thumb: 3–10× lower than pretraining lr (3e-4 → 1e-4).
+    var rlOptimizer = new AdamW(lr: 1e-4f, weightDecay: 0.01f);
+    logger.Kv("RL lr",              rlOptimizer.LearningRate);
+    logger.Kv("RL steps",           "2 000");
+    logger.Kv("RL samples/problem", 4);
+    logger.Kv("RL temperature",     0.8f);
+    logger.Kv("RL reward",          "oracle binary (1=correct, 0=wrong)");
+
+    // Capture pre-RL baseline for the delta comparison
+    float preRlAccuracy = greedySubset.Accuracy;
+
+    // Oracle reward lambda — mirrors Evaluator.RunGreedy's correctness check exactly.
+    // Receives the Problem (for the expected answer) and the full token sequence
+    // (prompt + sampled continuation).
+    float OracleReward(SyntheticDataset.Problem problem, int[] tokens)
+    {
+        int    promptLen   = tokenizer.Encode(problem.Prompt).Length;
+        string decoded     = tokenizer.Decode(tokens[promptLen..]);
+        string prediction  = decoded.Length >= problem.Answer.Length
+            ? decoded[..problem.Answer.Length]
+            : decoded;
+        return string.Equals(prediction, problem.Answer, StringComparison.Ordinal) ? 1.0f : 0.0f;
+    }
+
+    var rlResult = RlTrainer.TrainReinforce(
+        model, rlOptimizer, tokenizer,
+        trainProblems:    trainSet,
+        evalProblems:     testSet,
+        rewardFn:         OracleReward,   // oracle binary reward
+        steps:            2_000,
+        samplesPerProblem: 4,
+        temperature:      0.8f,
+        logEvery:         200,
+        logger:           logger);
+
+    logger.Info($"\n--- RL Fine-Tuning Results ---");
+    logger.Info($"Pre-RL  greedy accuracy : {preRlAccuracy:P1}  ({(int)(preRlAccuracy * testSet.Length)}/{testSet.Length})");
+    logger.Info($"Post-RL greedy accuracy : {rlResult.FinalAccuracy:P1}  ({(int)(rlResult.FinalAccuracy * testSet.Length)}/{testSet.Length})");
+    logger.Info($"Delta                   : {(rlResult.FinalAccuracy - preRlAccuracy):+0.0%;-0.0%;0.0%}");
+
+    if (rlResult.FinalAccuracy > preRlAccuracy)
+        logger.Info("✓ RL fine-tuning improved greedy accuracy — loop closed!");
+    else
+        logger.Info("✗ RL did not improve greedy on this run (ORM reward hacking or insufficient steps).");
+
+    // ── 9. Chain-of-Thought retraining + PRM ─────────────────────────────────
     // The PRM scores intermediate steps.  This requires the base LM to generate
     // a chain-of-thought ("2  3  9  " for A=2, B=3, C=9) rather than just the
     // final answer.  We retrain a fresh model on the CoT format, then train the
