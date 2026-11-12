@@ -20,8 +20,8 @@ todos:
     content: Implement the AdamW optimizer (decoupled weight decay, bias-corrected moments) and a basic training loop (forward → CrossEntropy → ZeroGrad → backward → optimizer.Step → log). Done ✅; GreedyDecode also implemented.
     status: done
   - id: design-step-representation
-    content: Define what a "reasoning step" is (e.g., a decoded sequence of 20–50 tokens), the branching factor for MCTS (top-k=4–8 candidates per step), and the overall search budget before building MCTS or PRM
-    status: pending
+    content: "DONE ✅. Step = 2 tokens (ContinuationLen=2, matching ORM training length). TopK=4 candidates per expansion, Budget=4 (flat depth-1 tree — ORM was trained on prompt+2 tokens only). Temperature=0.2 (low enough that each sample has ~30% probability of being correct, close to greedy accuracy). MaxDepth=1 prevents depth-2 expansion which would exceed the ORM's training distribution."
+    status: done
   - id: train-base-model
     content: "DONE ✅. 5000 problems, 19-char vocab, D=64/H=4/L=2/MLP=256 (134k params), 2000 steps (~25 min). Loss: 2.92→0.91→0.73→0.66→0.62→0.58. RunLogger writes to logs/run_*.log."
     status: done
@@ -29,10 +29,16 @@ todos:
     content: "DONE ✅. Greedy baseline: 46/500 = 9.2% on held-out test set. Random baseline ≈ 5.3%. Model beats random but plateaus early — needs more steps or larger model (SIMD Phase 2 unlocks this). Logged to logs/run_20261111_141554.log."
     status: done
   - id: reward-model
-    content: "DONE ✅. ORM implemented: frozen backbone (ForwardToHidden) + linear score head [D,1] + sigmoid. BCE loss, combined sigmoid+BCE gradient (dLogit=score−label). Only 64 params trained. RewardTrainer.TrainOrm: balanced pos/neg curriculum, random wrong answers from [0,99]. ORM ranking accuracy: 376/500 = 75.2% (random=50%). 9 new tests. Pipeline: 19 sec end-to-end."
+    content: "DONE ✅. ORM: frozen backbone + linear score head [D,1] + sigmoid. BCE loss. Only 64 params trained. RewardTrainer.TrainOrm supports hard negatives (model-sampled wrong answers via SampleModelWrongAnswer) to match MCTS inference distribution. EvalOrmRanking reports both random-negative accuracy (76.8%) and model-sampled accuracy (76.0%). PadContinuation pads answers to ContinuationLen=2 so ORM's last-token position is consistent. 9 tests."
     status: done
   - id: mcts-reasoning
-    content: Build MCTS over reasoning *steps* (not individual tokens) — expand top-k sampled step-candidates per node, score with PRM/ORM, backpropagate value up the tree; compare final accuracy against the greedy baseline
+    content: "DONE ✅. MctsSearch: 4-phase loop (Select via UCB1, Expand via temperature sampling, Evaluate via max ORM score, Backpropagate). MaxDepth=1 keeps tree flat (ORM distribution alignment). IncludeGreedyCandidate=false. T=0.2, TopK=4, Budget=4. MctsEvaluator.RunMcts mirrors Evaluator.RunGreedy for fair comparison. Evaluator correctness: decoded[..answer.Length]==answer (exact, not StartsWith; log shows clean prediction). 62 tests total. Result: MCTS 31.8% vs Greedy 31.4% (+0.4%, 159/500 vs 157/500) — Test-Time Compute demonstrated."
+    status: done
+  - id: prm
+    content: "Extend ORM to a Process Reward Model: score each intermediate reasoning step, not just the final answer. Step-level labels are programmatically derivable from SyntheticDataset.Problem.Steps. Multi-step MCTS (MaxDepth>1) becomes meaningful once PRM can guide intermediate steps."
+    status: pending
+  - id: rl-finetuning
+    content: "Use the ORM/PRM as a reward signal to fine-tune the base LM via policy gradient (REINFORCE or PPO-lite). This closes the loop: train with RL → better base model → better MCTS candidates → higher accuracy."
     status: pending
 isProject: true
 ---

@@ -97,11 +97,12 @@ reason.cs/
 │   │   ├── Diagnostics/
 │   │   │   └── RunLogger.cs        # File + console logger (STEP/EVAL/PRED lines)
 │   │   ├── Inference/
-│   │   │   └── Evaluator.cs        # Greedy-decoding accuracy (baseline)
+│   │   │   ├── Evaluator.cs        # Greedy-decoding accuracy (baseline)
+│   │   │   └── MctsEvaluator.cs    # MCTS accuracy (mirrors Evaluator for fair comparison)
 │   │   └── Reasoning/
 │   │       ├── RewardModel.cs      # ORM / PRM scoring head
-│   │       ├── MctsNode.cs         # MCTS tree node (UCB1, visits, value)
-│   │       └── MctsSearch.cs       # 4-phase MCTS over reasoning steps
+│   │       ├── MctsNode.cs         # MCTS tree node (UCB1, visits, value, depth)
+│   │       └── MctsSearch.cs       # 4-phase MCTS (Select/Expand/Evaluate/Backprop)
 │   └── ReasonCs.Runner/
 │       └── Program.cs              # Staged entry point
 └── tests/
@@ -140,8 +141,9 @@ dotnet test ReasonCs.slnx
 | `TransformerSmokeTests` — backward no NaN/Inf, gradients non-zero, loss decreases, greedy decode | 4 | ✅ passing |
 | `SyntheticDatasetTests` — generate count/steps/answer/format/range/determinism, split, tokenizer, eval pipeline | 12 | ✅ passing |
 | `RewardModelTests` — score range, gradient non-zero, ZeroGrad, BCE loss, score↑ after pos training, score↓ after neg training, ranking accuracy > 55%, SampleWrongAnswer | 9 | ✅ passing |
+| `MctsSearchTests` — returns longer sequence, starts with prompt, budget=TopK gives exact TopK children, zero-budget returns prompt, different seeds differ, prefers better ORM score, MctsEvaluator returns valid fraction | 7 | ✅ passing |
 
-**Total: 55 passing · 0 skipped · 0 failing**
+**Total: 62 passing · 0 skipped · 0 failing**
 
 ---
 
@@ -230,6 +232,7 @@ dotnet test ReasonCs.slnx
 #### `MctsNode` — `src/ReasonCs.Core/Reasoning/MctsNode.cs`
 - Tree node with `Tokens`, `Parent`, `Children`, `Visits`, `TotalValue`, `PriorScore` ✅
 - `Q` property (mean value), `UCB(explorationC)` — Upper Confidence Bound ✅
+- `Depth` property — distance from root (root=0); used by `MaxDepth` guard ✅
 
 #### `SyntheticDataset` — `src/ReasonCs.Core/Data/SyntheticDataset.cs`
 - **`Generate(count, minSteps, maxSteps, seed)`** — 2/3-step chained arithmetic: `"A=2 B=A+1 C=B*3 C=?"` → `"9"` ✅
@@ -239,8 +242,14 @@ dotnet test ReasonCs.slnx
 - **`TrainTestSplit(problems, testRatio, seed)`** — Fisher-Yates shuffle + index split ✅
 
 #### `Evaluator` — `src/ReasonCs.Core/Inference/Evaluator.cs`
-- **`RunGreedy(model, tokenizer, testSet, maxNewTokens=4)`** — correct if decoded output `.StartsWith(answer)` ✅
+- **`RunGreedy(model, tokenizer, testSet, maxNewTokens=4)`** — correct if `decoded[..answer.Length] == answer` ✅
+  - Character-level tokenizer: one token = one char; only first `answer.Length` chars are the answer, rest is forced-generation noise
+  - `StartsWith` was wrong: `"30".StartsWith("3")` true but "30" ≠ "3"; log now shows exactly `prediction` chars — no trailing noise
 - Returns `EvalResult(Correct, Total, Accuracy)` ✅
+
+#### `MctsEvaluator` — `src/ReasonCs.Core/Inference/MctsEvaluator.cs`
+- **`RunMcts(mcts, tokenizer, testSet)`** — mirrors `Evaluator.RunGreedy` exactly; same correctness check ✅
+- Returns `EvalResult` comparable directly to greedy baseline ✅
 
 #### `RunLogger` — `src/ReasonCs.Core/Diagnostics/RunLogger.cs`
 - Writes every event to **both console and a timestamped log file** under `logs/` ✅
@@ -252,11 +261,12 @@ dotnet test ReasonCs.slnx
 - `TransformerModel.GradNorm()` — global L2 norm across all gradient tensors; logged each step ✅
 
 #### `Program.cs` — `src/ReasonCs.Runner/Program.cs`
-- Full pipeline: `Generate(5000)` → `TrainTestSplit` → `Tokenizer` → `TransformerModel` (134 k params) → `TrainingLoop(2000 steps)` → `Evaluator` ✅
-- Vocab: 19 chars, 134 144 parameters (D=64, H=4, L=2, MLP=256), 2000 steps, **~27 sec on CPU** (was ~25 min before SIMD)
-- Loss curve: 2.92 → 0.91 → 0.73 → 0.70 → 0.69 → 0.66 → 0.66 → 0.62 → 0.67 → 0.58 (steps 0/200/…/1800)
-- **Greedy baseline: 46/500 = 9.2%** (random chance ≈ 5.3%; model beats random)
-- Common failure: model outputs `"10x"` for most answers — loss still converging at 2000 steps; more steps are now cheap
+- Full pipeline: `Generate(5000)` → `TrainTestSplit` → `Tokenizer` → `TransformerModel` (134k params) → `TrainingLoop(10 000 steps)` → Greedy eval → ORM training (hard negatives) → dual ORM ranking eval → MCTS eval (all 500 problems) ✅
+- Vocab: 19 chars · 134 144 params (D=64, H=4, L=2, MLP=256) · **~2 min end-to-end on CPU** with SIMD
+- Loss: 2.92 → 0.66 (step 1000) → 0.50 (step 7000, plateau)
+- **Greedy baseline: 157/500 = 31.4%**
+- **ORM ranking: 76.8%** (random wrong) · **76.0%** (model-sampled wrong)
+- **MCTS accuracy: 159/500 = 31.8%** (+0.4% delta) — ✓ Test-Time Compute demonstrated
 
 #### `RewardModel` — `src/ReasonCs.Core/Reasoning/RewardModel.cs`
 - **Architecture** — linear scoring head `[EmbedDim, 1]` on top of a frozen backbone; `sigmoid(last_hidden @ ScoreHead)` → scalar ∈ (0,1) ✅
@@ -266,29 +276,46 @@ dotnet test ReasonCs.slnx
 - Only **64 trainable parameters** (EmbedDim=64 score head); backbone stays frozen
 
 #### `RewardTrainer` — `src/ReasonCs.Core/Training/RewardTrainer.cs`
-- **`TrainOrm(...)`** — balanced pos/neg curriculum (50/50 per step); negative = random wrong answer from [0,99]; AdamW on score head only ✅
-- **`EvalOrmRanking(...)`** — ranking accuracy: P(score(correct) > score(wrong)) ✅
-- **`SampleWrongAnswer(correct, rng)`** — public helper for tests; samples a wrong answer string ✅
+- **`TrainOrm(..., baseModel?, negativeTemp)`** — balanced pos/neg curriculum; when `baseModel` is provided, negatives are **model-sampled hard negatives** (temperature-sampled from the base LM) rather than random integers — matches MCTS inference distribution ✅
+- **`EvalOrmRanking(..., baseModel?, negativeTemp)`** — ranking accuracy P(correct > wrong); supports both random and model-sampled negative eval ✅
+- **`PadContinuation(s)`** — pads/truncates to exactly `ContinuationLen=2` chars so ORM's last-token position is always `promptLen+1` ✅
+- **`SampleWrongAnswer(correct, rng)`** — random integer fallback; public for tests ✅
+- **`SampleModelWrongAnswer(...)`** — temperature-samples `ContinuationLen` tokens from base LM; returns null if accidentally correct ✅
 
 #### `ForwardToHidden` — added to `TransformerModel`
 - Runs Embedding→Blocks→FinalLN without applying the LM head; returns `[seqLen, EmbedDim]` ✅
 - Backbone caches are updated but backbone backward is never called during ORM training
 
-#### Stubs remaining
+#### `MctsSearch` — `src/ReasonCs.Core/Reasoning/MctsSearch.cs`
+- **4-phase MCTS loop** over reasoning *steps* (not individual tokens): Select → Expand → Evaluate → Backpropagate ✅
+- **Select**: walk tree via UCB1, stop at a leaf OR at `MaxDepth` (default 1) ✅
+- **Expand**: temperature-sample `TopK` distinct step-candidates (deduplicated); optionally seed with greedy decode (`IncludeGreedyCandidate`) ✅
+- **Evaluate**: optimistic backup — `max(PriorScore)` among new children ✅
+- **Backpropagate**: increment `Visits` and accumulate `TotalValue` from leaf to root ✅
+- Key design constraints:
+  - `MaxDepth=1` — flat tree; prevents depth-2 expansion that would exceed ORM training distribution (prompt+4 vs prompt+2 tokens)
+  - `StepTokenLen=ContinuationLen=2` — step size matches ORM's training sequence length exactly
+  - `Temperature=0.2` — low enough that each sample has ~30% probability of being correct; `ArgMax` helper for T=0 (greedy)
+  - `IncludeGreedyCandidate=false` — deduplication would block temp samples from regenerating the correct answer when greedy has it, netting negative delta
 
-| Module | File | Status |
-|---|---|---|
-| `MctsSearch` | `Reasoning/MctsSearch.cs` | 🔲 TODO |
+#### `Program.cs` — `src/ReasonCs.Runner/Program.cs`
+- Full pipeline: `Generate(5000)` → `TrainTestSplit` → `Tokenizer` → `TransformerModel` (134k params) → `TrainingLoop(10 000 steps)` → Greedy eval → ORM training (hard negatives) → dual ORM eval → MCTS eval (all 500 problems) ✅
+- **Greedy baseline: 157/500 = 31.4%** (10 000 steps, ~90 s on CPU with SIMD)
+- **ORM ranking accuracy: 76.8%** (vs random wrong) / **76.0%** (vs model-sampled wrong)
+- **MCTS accuracy: 159/500 = 31.8% (+0.4%)** — Test-Time Compute demonstrated ✅
 
 ---
 
 ### 🔜 What's Next (ordered by plan)
 
-1. **`MctsSearch`** — MCTS over reasoning steps, scored by ORM; compare against **8.6–9.2% greedy baseline**
-   - Select (UCB1), Expand (top-k sampled steps), Evaluate (ORM score), Backpropagate
-   - Target: accuracy > greedy baseline to demonstrate Test-Time Compute works
+1. **PRM (Process Reward Model)** — extend ORM to score *intermediate reasoning steps*, not just final answers
+   - Step-level correctness labels are already available via `SyntheticDataset.Problem.Steps`
+   - Enables `MaxDepth>1` multi-step MCTS (currently limited to depth 1 by ORM distribution)
+   - Target: MCTS with multi-step lookahead should beat flat depth-1 search
 
-> *(Optional: more training steps / larger config — trivial at ~7 ms/step)*
+2. **RL fine-tuning** — use ORM as reward signal to improve the base LM via policy gradient (REINFORCE or PPO-lite)
+   - Closes the loop: better base model → better MCTS candidates → higher accuracy
+   - Base LM currently at 31.4% greedy — more training or RL should push this significantly higher
 
 ---
 
@@ -329,10 +356,12 @@ Every handcrafted implementation carries a full `/// PyTorch equivalent:` sectio
 | `TrainingLoop` | `loss.backward()` + `optimizer.step()` | Manual reverse pass; `ZeroGrad()` before each backward |
 | `Tokenizer` | `tiktoken` / `AutoTokenizer` | Character-level; vocabulary from corpus |
 | `SyntheticDataset` | `torch.utils.data.Dataset` | Programmatic step labels (no human annotation) |
-| `Evaluator` | `model.eval()` + `torch.no_grad()` + `argmax` | Greedy decoding accuracy |
-| `RewardModel` | Custom `nn.Module` + `nn.Linear` head | ORM first → extend to PRM |
-| `MctsNode` | Plain dataclass (no PyTorch equivalent) | Pure search data structure |
-| `MctsSearch` | No PyTorch equivalent | Pure search algorithm; LLM used only in Expand |
+| `Evaluator` | `model.eval()` + `torch.no_grad()` + `argmax` | Greedy decoding; `decoded[..answer.Length]==answer` (char-level exact match) |
+| `MctsEvaluator` | vLLM best-of-N + verifier | Mirrors `Evaluator`; same correctness check for fair comparison |
+| `RewardModel` | Custom `nn.Module` + `nn.Linear` head | ORM: 64-param score head; backbone frozen |
+| `RewardTrainer` | Custom training loop | Hard negatives: model-sampled via temperature sampling; dual ORM eval |
+| `MctsNode` | Plain dataclass (no PyTorch equivalent) | Pure search data structure; `Depth` property for `MaxDepth` guard |
+| `MctsSearch` | No PyTorch equivalent — closest: vLLM best-of-N + reward reranker | 4-phase MCTS; MaxDepth=1 (flat tree); T=0.2 |
 | `RunLogger` | `logging` / TensorBoard `SummaryWriter` | File + console; STEP/EVAL/PRED structured lines; no external deps |
 
 ---
